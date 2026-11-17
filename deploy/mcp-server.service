@@ -1,0 +1,31 @@
+# Servizio systemd per il server MCP (container LXC Proxmox + venv).
+# Installazione:
+#   cp deploy/mcp-server.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now mcp-server
+# Vedi README.md, sezione "Sicurezza", per la creazione dell'utente "mcp".
+
+[Unit]
+Description=Server MCP per OpenWebUI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mcp
+WorkingDirectory=/opt/mcp-server
+# systemd legge il .env come root prima di passare all'utente mcp:
+# il server riceve i segreti ma l'agente (terminale) non puo' leggere il file.
+EnvironmentFile=/opt/mcp-server/.env
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+Environment=PATH=/opt/mcp-server/venv/bin:/home/mcp/.deno/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/mcp-server/venv/bin/python /opt/mcp-server/mcp_server.py
+Restart=on-failure
+RestartSec=5
+
+# Hardening: il resto del sistema e' in sola lettura per il server e per i comandi dell'agente
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/mcp-server/data /home/mcp
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

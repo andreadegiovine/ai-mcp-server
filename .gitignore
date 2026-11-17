@@ -1,0 +1,14 @@
+# Segreti e configurazione locale
+.env
+*.json.key
+service_account*.json
+client_secret*.json
+
+# Dati di runtime (timer, memoria, workspace, token Google, log)
+data/
+
+# Python
+venv/
+.venv/
+__pycache__/
+*.pyc

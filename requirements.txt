@@ -1,0 +1,14 @@
+mcp>=1.10,<2
+uvicorn
+requests
+trafilatura
+playwright
+ddgs
+pillow
+pypdf
+yt-dlp
+ytmusicapi
+google-api-python-client
+google-auth
+google-auth-oauthlib
+python-dotenv
