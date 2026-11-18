@@ -6,7 +6,7 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
-## 2026-11-18 · Titoli dei tool adatti alla voce e guida all'aggiornamento
+## 2026-11-18 · Titoli adatti alla voce, guida all'aggiornamento, domande all'utente
 
 ### Attività svolte
 - ✅ Titoli dei tool resi leggibili da un sintetizzatore vocale: tolti parentesi, due punti e prefissi tecnici (OpenWebUI li mostra in chat come `Uso "<titolo>"...`). Esempi:
@@ -16,7 +16,14 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 - ✅ Nuovo test che controlla che ogni titolo contenga solo lettere e spazi (**124/124 superati**)
 - ✅ README: nuova sezione **Aggiornamento** (git pull, dipendenze, browser Playwright, confronto delle variabili del `.env`, riavvio del servizio, ritorno alla versione precedente)
 
+- ✅ Nuovo strumento `chiedi_all_utente`: domande con opzioni prefissate (anche a scelta multipla) e/o risposta libera
+  - Modalità predefinita "domanda in chat": il modello pone la domanda in modo naturale e senza simboli (adatta alla voce) e attende la risposta; funziona con qualsiasi client
+  - Modalità opzionale con modulo interattivo (elicitation MCP, `ENABLE_ELICITATION=true`), con ripiego automatico sulla domanda in chat se il client non la supporta
+  - Filtrato dal log un errore innocuo che la libreria MCP registra alla chiusura delle sessioni
+  - 11 nuovi test, tra cui un client MCP che compila il modulo (**135/135 superati**)
+
 ### Decisioni prese
+- L'elicitation funziona solo con server con sessione e risposte in streaming (verificato: con `stateless_http` + `json_response` la richiesta al client non arriva). Resta quindi disattivata di default per non cambiare la modalità di trasporto usata con OpenWebUI, il cui supporto all'elicitation non è confermato dalla documentazione
 - I titoli sono frasi naturali in italiano, pensate per l'integrazione futura con un servizio vocale; i nomi tecnici dei tool (`hass_cerca_entita`, ...) non cambiano, quindi le configurazioni esistenti restano valide
 
 ---
@@ -75,6 +82,7 @@ Server MCP v1 con 6 tool: data/ora, ricerca Google con Playwright, lettura pagin
 
 - ⏳ Primo deploy su Proxmox e verifica dal vivo di ricerca, musica e calendario
 - ⏳ Collaudo con OpenWebUI: visualizzazione delle immagini restituite dai tool e scelta dei tool da tenere attivi per il modello in uso
+- ⏳ Verificare se la versione di OpenWebUI in uso supporta l'elicitation MCP (in quel caso provare `ENABLE_ELICITATION=true`)
 - 💡 Sandbox dei comandi del terminale con bubblewrap (visibilità limitata al solo workspace)
 - 💡 Musica tramite Music Assistant, come alternativa a yt-dlp per gli altoparlanti di HA
 - 💡 Pausa automatica della musica (o volume abbassato) quando scatta un timer

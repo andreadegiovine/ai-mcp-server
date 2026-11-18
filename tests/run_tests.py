@@ -114,6 +114,18 @@ async def main():
             mid = t.split("[")[1].split("]")[0]
             t = testo(await call("memoria_elimina", id=mid)); check("memoria elimina", "eliminata" in t, t)
 
+            # --- domande all'utente (modalita' conversazionale) ---
+            check("chiedi_all_utente: ctx non esposto nello schema", "ctx" not in tools["chiedi_all_utente"].inputSchema["properties"],
+                  tools["chiedi_all_utente"].inputSchema)
+            t = testo(await call("chiedi_all_utente", domanda="Quale versione vuoi ascoltare?", opzioni="Originale | Live 1985 | Remaster"))
+            check("chiedi_all_utente: opzioni da testo con |", "1. Originale" in t and "3. Remaster" in t and "rispondere liberamente" in t and "attendere" in t, t)
+            t = testo(await call("chiedi_all_utente", domanda="Accendo tutte le luci?", opzioni=["Sì", "No"], risposta_libera=False))
+            check("chiedi_all_utente: opzioni come lista, solo scelte", "2. No" in t and "deve scegliere" in t, t)
+            t = testo(await call("chiedi_all_utente", domanda="Come si chiama il tuo gatto?"))
+            check("chiedi_all_utente: domanda aperta", "Opzioni" not in t and "gatto" in t, t)
+            t = testo(await call("chiedi_all_utente", domanda="  "))
+            check("chiedi_all_utente: domanda vuota", "vuota" in t, t)
+
             # --- web ---
             t = testo(await call("leggi_pagina_web", url=W + "/articolo"))
             check("leggi pagina (browser+trafilatura)", "Guida alla pasta" in t and "Parte 1 di" in t and "Menu Home" not in t and "pasta.png" in t, t[:600])
@@ -248,6 +260,44 @@ async def main():
             t = testo(await call("musica_controlla", azione="volume", valore=20)); check("volume HA", "40% → 20%" in t, t)
             t = testo(await call("musica_controlla", azione="stop")); check("stop HA", "interrotta" in t, t)
             t = testo(await call("musica_riproduci", richiesta="x", dispositivo="bagno")); check("dispositivo inesistente", "Nessun altoparlante" in t, t)
+
+    # --- Domande con modulo interattivo (elicitation MCP, ENABLE_ELICITATION=true) ---
+    from mcp import types as mtypes
+    os.environ["ENABLE_ELICITATION"] = "true"
+    srv_e = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv_e)
+    os.environ.pop("ENABLE_ELICITATION")
+    servers.append(await serve(srv_e.crea_app(), 18001))
+    risposte = []
+    async def risponde(context, params):
+        risposte.append(params)
+        schema = params.requestedSchema["properties"]
+        if "Rifiuta" in params.message:
+            return mtypes.ElicitResult(action="decline")
+        if "scelte" in schema:
+            return mtypes.ElicitResult(action="accept", content={"scelte": ["Cucina", "Bagno"]})
+        if "scelta" in schema:
+            return mtypes.ElicitResult(action="accept", content={"scelta": schema["scelta"]["enum"][1]})
+        return mtypes.ElicitResult(action="accept", content={"risposta": "Micio"})
+    async with streamablehttp_client("http://127.0.0.1:18001/", headers=hdr) as (rd, wr, _):
+        async with ClientSession(rd, wr, elicitation_callback=risponde) as s2:
+            await s2.initialize()
+            t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Quale versione?", "opzioni": "Originale|Live|Remaster"}))
+            check("elicitation: scelta singola dal modulo", "ha scelto: Live" in t, t)
+            sch = risposte[-1].requestedSchema["properties"]
+            check("elicitation: schema con enum + campo libero", sch["scelta"]["enum"] == ["Originale", "Live", "Remaster"] and "risposta" in sch, sch)
+            t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Quali stanze?", "opzioni": ["Cucina", "Bagno", "Camera"],
+                                                               "scelta_multipla": True, "risposta_libera": False}))
+            check("elicitation: scelta multipla", "Cucina, Bagno" in t, t)
+            t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Come si chiama il gatto?"}))
+            check("elicitation: risposta libera", "ha risposto: Micio" in t, t)
+            t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Rifiuta questa domanda"}))
+            check("elicitation: utente rifiuta", "preferito non rispondere" in t, t)
+    # client senza supporto elicitation sullo stesso server -> ripiego conversazionale
+    async with streamablehttp_client("http://127.0.0.1:18001/", headers=hdr) as (rd, wr, _):
+        async with ClientSession(rd, wr) as s3:
+            await s3.initialize()
+            t = testo(await s3.call_tool("chiedi_all_utente", {"domanda": "Quale versione?", "opzioni": "A|B"}))
+            check("elicitation: client non compatibile -> domanda in chat", "DOMANDA DA PORRE" in t, t)
 
     # --- Parsing date/durate (unit test) ---
     from datetime import datetime as D

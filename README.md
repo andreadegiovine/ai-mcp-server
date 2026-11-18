@@ -18,6 +18,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Collegamento a OpenWebUI](#collegamento-a-openwebui)
 - [Home Assistant](#home-assistant)
 - [Musica](#musica)
+- [Domande all'utente](#domande-allutente)
 - [Timer e sveglie](#timer-e-sveglie)
 - [Google Calendar](#google-calendar)
 - [Sicurezza](#sicurezza)
@@ -29,7 +30,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 
 ## Strumenti disponibili
 
-Il server espone **40 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google. Puoi nasconderne altri con `DISABLED_TOOLS`.
+Il server espone **41 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google. Puoi nasconderne altri con `DISABLED_TOOLS`.
 
 ### Generali
 | Tool | Cosa fa |
@@ -39,6 +40,7 @@ Il server espone **40 tool**, divisi in gruppi. Un gruppo non configurato viene 
 | `meteo` | Meteo attuale, prossime ore e previsioni fino a 16 giorni, per **nome della località** o per coordinate (Open-Meteo) |
 | `converti_valuta` | Conversione con i tassi ufficiali BCE (Frankfurter) |
 | `memoria_salva` / `memoria_leggi` / `memoria_elimina` | Memoria permanente per preferenze e informazioni sull'utente |
+| `chiedi_all_utente` | Fa una domanda all'utente, con opzioni prefissate e/o risposta libera, e ne attende la risposta (vedi [Domande all'utente](#domande-allutente)) |
 
 ### Web
 | Tool | Cosa fa |
@@ -249,6 +251,8 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `TIMEZONE` | `Europe/Rome` | Fuso orario |
 | `DISABLED_TOOLS` | – | Tool da nascondere, separati da virgola |
 | `ENABLE_TERMINAL` / `ENABLE_HASS` / `ENABLE_MUSIC` / `ENABLE_CALENDAR` | `true` | Attivano o disattivano interi gruppi |
+| `ENABLE_ELICITATION` | `false` | Domande all'utente con modulo interattivo; richiede un client compatibile (vedi [Domande all'utente](#domande-allutente)) |
+| `ELICITATION_TIMEOUT` | `300` | Secondi di attesa della risposta nel modulo interattivo |
 
 ### Web
 | Variabile | Default | Descrizione |
@@ -351,6 +355,26 @@ Le istruzioni generali per il modello (usare le fonti, mostrare le immagini con 
 
 ---
 
+## Domande all'utente
+
+Con `chiedi_all_utente` l'agente può far scegliere l'utente tra alternative ("quale versione del brano?", "quale dei due eventi sposto?"), chiedere un'informazione che gli manca o una conferma prima di un'azione importante.
+
+Parametri:
+- `domanda`: il testo della domanda;
+- `opzioni`: fino a 10 scelte, come lista oppure come testo separato da `|` (es. `"Originale | Live | Remaster"`);
+- `risposta_libera`: se `false`, l'utente deve scegliere tra le opzioni (default `true`);
+- `scelta_multipla`: permette di scegliere più opzioni.
+
+Lo strumento funziona in due modalità.
+
+**1. Domanda in chat (predefinita, funziona sempre).** Lo strumento restituisce al modello la domanda e le opzioni numerate, con l'istruzione di porla all'utente in modo naturale, senza simboli (quindi adatta anche alla lettura vocale), e di fermarsi ad aspettare. La risposta arriva come messaggio normale dell'utente, che può dire anche "la seconda" o riformulare l'opzione. Funziona con qualsiasi client, compreso un futuro servizio vocale.
+
+**2. Modulo interattivo (opzionale).** Con `ENABLE_ELICITATION=true` il server usa l'*elicitation* MCP: se il client la supporta, mostra all'utente un modulo con le opzioni (menu a tendina, scelta multipla, campo libero) e la risposta torna direttamente al modello, nella stessa chiamata. Se il client non la supporta, lo strumento ripiega da solo sulla domanda in chat.
+
+> Per l'elicitation il server deve inviare una richiesta al client durante l'esecuzione di un tool, cosa possibile solo con sessione e risposte in streaming. Per questo `ENABLE_ELICITATION=true` disattiva le modalità `stateless_http` e `json_response` usate di default per la massima compatibilità con OpenWebUI. Al momento la documentazione di OpenWebUI non conferma il supporto all'elicitation: lascia l'opzione disattivata, a meno che il tuo client non la supporti.
+
+---
+
 ## Timer e sveglie
 
 - **Formati:** `timer_imposta(durata="10m")`, `"1h30m"`, `"1 ora e 15 minuti"`, `"mezz'ora"`, `"00:05:00"`; un numero senza unità vale minuti.
@@ -416,7 +440,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 123 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 135 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 

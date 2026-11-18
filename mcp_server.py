@@ -12,7 +12,8 @@ redirect 307 -> 404 di OpenWebUI che rimuove lo slash finale dagli URL.
 
 Gruppi di strumenti
 -------------------
-  * Generali     : data/ora, calcolatrice, meteo (per nome localita'), cambio valuta, memoria
+  * Generali     : data/ora, calcolatrice, meteo (per nome localita'), cambio valuta, memoria,
+                   domande all'utente con opzioni o risposta libera
   * Web          : ricerca (Google -> DuckDuckGo -> Bing), notizie, lettura pagine/PDF,
                    ricerca immagini (con anteprime visibili al modello), screenshot, download
   * Workspace    : terminale (anche in background), lettura/scrittura/modifica/ricerca file, python
@@ -27,6 +28,7 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
   Generale
     MCP_HOST=0.0.0.0  MCP_PORT=8000
     MCP_API_KEY=                     # consigliato: protegge l'endpoint con "Authorization: Bearer <chiave>"
+    ENABLE_ELICITATION=false         # true = domande all'utente con modulo interattivo (client compatibile)
     DATA_DIR=./data                  # dati persistenti (timer, memoria, workspace, log)
     TIMEZONE=Europe/Rome
     DISABLED_TOOLS=                  # elenco separato da virgole di tool da nascondere
@@ -113,7 +115,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal, Optional, Union
 from urllib.parse import quote, quote_plus, urljoin, urlparse, parse_qs
 from zoneinfo import ZoneInfo
 
@@ -121,7 +123,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ImageContent, TextContent, ToolAnnotations
 
 # --- Dipendenze opzionali (il server parte anche se mancano) ----------------
@@ -202,6 +204,9 @@ def _env_int(name: str, default: int) -> int:
 MCP_HOST = _env("MCP_HOST", "0.0.0.0")
 MCP_PORT = _env_int("MCP_PORT", 8000)
 MCP_API_KEY = _env("MCP_API_KEY")
+# Moduli interattivi MCP ("elicitation"): richiedono un server con sessione e un client compatibile.
+ENABLE_ELICITATION = _env_bool("ENABLE_ELICITATION", False)
+ELICITATION_TIMEOUT = _env_int("ELICITATION_TIMEOUT", 300)
 
 DATA_DIR = Path(_env("DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
 WORKSPACE_DIR = Path(_env("WORKSPACE_DIR", str(DATA_DIR / "workspace"))).expanduser().resolve()
@@ -299,6 +304,18 @@ for _n in ("uvicorn", "uvicorn.access", "uvicorn.error", "httpx", "mcp.server.st
 logger = logging.getLogger("mcp-server")
 
 
+class _FiltroChiusuraSessione(logging.Filter):
+    """Nasconde l'errore innocuo che la libreria MCP registra quando un client chiude una sessione."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        exc = record.exc_info[1] if record.exc_info else None
+        return not (record.getMessage().startswith("Error in standalone SSE writer")
+                    and type(exc).__name__ == "ClosedResourceError")
+
+
+logging.getLogger("mcp.server.streamable_http").addFilter(_FiltroChiusuraSessione())
+
+
 # =============================================================================
 # SERVER MCP
 # =============================================================================
@@ -316,8 +333,11 @@ mcp = FastMCP(
     host=MCP_HOST,
     port=MCP_PORT,
     streamable_http_path="/",
-    stateless_http=True,
-    json_response=True,
+    # Senza elicitation: ogni richiesta e' autonoma e la risposta e' un JSON semplice (massima
+    # compatibilita' con OpenWebUI). Con elicitation servono sessione e risposte in streaming,
+    # perche' il server deve poter inviare una richiesta al client durante l'esecuzione di un tool.
+    stateless_http=not ENABLE_ELICITATION,
+    json_response=not ENABLE_ELICITATION,
 )
 
 REGISTERED_TOOLS: list[str] = []
@@ -1605,6 +1625,116 @@ async def converti_valuta(importo: float, da: str, a: str) -> str:
     if da == a:
         return f"{importo} {da} = {importo} {a}"
     return await asyncio.to_thread(_cambio, float(importo), da, a)
+
+
+# =============================================================================
+# DOMANDE ALL'UTENTE
+# =============================================================================
+def _lista_opzioni(opzioni: Union[list[str], str, None]) -> list[str]:
+    if not opzioni:
+        return []
+    voci = opzioni if isinstance(opzioni, list) else re.split(r"\s*[|;\n]\s*", str(opzioni))
+    pulite: list[str] = []
+    for v in voci:
+        v = str(v).strip()
+        if v and v not in pulite:
+            pulite.append(v[:100])
+    return pulite[:10]
+
+
+def _modulo_domanda(opzioni: list[str], libera: bool, multipla: bool):
+    """Crea lo schema del modulo per l'elicitation MCP (solo tipi primitivi, come da specifica)."""
+    from pydantic import Field, create_model
+    campi: dict[str, Any] = {}
+    if opzioni and multipla:
+        campi["scelte"] = (list[str] if not libera else Optional[list[str]],
+                           Field(default=... if not libera else None, title="Scelte",
+                                 json_schema_extra={"items": {"type": "string", "enum": opzioni}}))
+    elif opzioni:
+        campi["scelta"] = (str if not libera else Optional[str],
+                           Field(default=... if not libera else None, title="Scelta",
+                                 json_schema_extra={"enum": opzioni}))
+    if libera:
+        campi["risposta"] = (str if not opzioni else Optional[str],
+                             Field(default=... if not opzioni else None,
+                                   title="Risposta" if not opzioni else "Altro (risposta libera)"))
+    return create_model("Risposta", **campi)
+
+
+def _testo_domanda(domanda: str, opzioni: list[str], libera: bool, multipla: bool) -> str:
+    righe = ["DOMANDA DA PORRE ALL'UTENTE (devi attendere la sua risposta prima di proseguire):", domanda]
+    if opzioni:
+        righe.append("Opzioni:")
+        righe.extend(f"{i}. {o}" for i, o in enumerate(opzioni, 1))
+        if multipla:
+            righe.append("L'utente puo' sceglierne piu' di una.")
+        righe.append("L'utente puo' anche rispondere liberamente." if libera
+                     else "L'utente deve scegliere tra queste opzioni.")
+    righe.append(
+        "\nIstruzioni: fai ora questa domanda all'utente con parole naturali, presentando le opzioni in una "
+        "frase scorrevole e senza simboli, cosi' che funzioni anche letta ad alta voce. Poi termina il messaggio: "
+        "non chiamare altri strumenti e non rispondere al posto dell'utente. Quando l'utente risponde, "
+        "accetta anche riferimenti come 'la seconda', 'l'ultima' o parafrasi delle opzioni."
+    )
+    return "\n".join(righe)
+
+
+@tool(
+    "chiedi_all_utente",
+    title="Fai una domanda",
+    description=(
+        "Fa una domanda all'utente e ne attende la risposta, con opzioni prefissate e/o risposta libera. "
+        "Usalo quando devi far scegliere l'utente tra alternative (es. quale brano, quale evento, quale "
+        "dispositivo), quando ti manca un'informazione indispensabile o per una conferma prima di un'azione "
+        "importante. 'opzioni': elenco di scelte (lista oppure testo separato da '|'), al massimo 10; "
+        "risposta_libera=false obbliga a scegliere tra le opzioni; scelta_multipla=true permette piu' scelte. "
+        "Non usarlo per domande banali che puoi risolvere da solo."
+    ),
+    read_only=True,
+)
+async def chiedi_all_utente(domanda: str, opzioni: Union[list[str], str, None] = None,
+                            risposta_libera: bool = True, scelta_multipla: bool = False,
+                            ctx: Optional[Context] = None) -> str:
+    domanda = (domanda or "").strip()
+    if not domanda:
+        raise UserError("La domanda e' vuota.")
+    voci = _lista_opzioni(opzioni)
+    libera = risposta_libera or not voci
+
+    # Modulo interattivo (elicitation MCP), solo se abilitato e supportato dal client
+    supportato = False
+    if ENABLE_ELICITATION and ctx is not None:
+        with contextlib.suppress(Exception):
+            params = ctx.session.client_params
+            supportato = bool(params and params.capabilities and params.capabilities.elicitation is not None)
+    if supportato:
+        try:
+            esito = await asyncio.wait_for(
+                ctx.elicit(domanda, _modulo_domanda(voci, libera, scelta_multipla)), ELICITATION_TIMEOUT)
+        except asyncio.TimeoutError:
+            return f"L'utente non ha risposto entro {fmt_durata(ELICITATION_TIMEOUT)} alla domanda: {domanda}"
+        except Exception as e:
+            logger.warning(f"Elicitation non riuscita, uso la domanda in chat: {e}")
+        else:
+            if esito.action != "accept":
+                return ("L'utente ha preferito non rispondere alla domanda." if esito.action == "decline"
+                        else "L'utente ha annullato la domanda.") + f" (Domanda: {domanda})"
+            dati = esito.data.model_dump()
+            parti = []
+            if dati.get("scelte"):
+                parti.append("ha scelto: " + ", ".join(dati["scelte"]))
+            if dati.get("scelta"):
+                parti.append(f"ha scelto: {dati['scelta']}")
+            if dati.get("risposta"):
+                parti.append(f"ha risposto: {dati['risposta']}")
+            fuori_elenco = [x for x in ([dati.get("scelta")] + list(dati.get("scelte") or []))
+                            if x and voci and x not in voci]
+            if fuori_elenco:
+                parti.append("(valori non presenti tra le opzioni: " + ", ".join(fuori_elenco) + ")")
+            return f"Risposta dell'utente alla domanda '{domanda}': " + ("; ".join(parti) or "nessun valore")
+
+    # Modalita' conversazionale: funziona con qualsiasi client e con la voce
+    return _testo_domanda(domanda, voci, libera, scelta_multipla)
 
 
 # =============================================================================
