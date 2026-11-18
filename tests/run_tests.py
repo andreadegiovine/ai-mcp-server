@@ -19,6 +19,8 @@ os.environ.update({
     "WEB_ALLOW_PRIVATE_URLS": "false", "MCP_API_KEY": "chiave-test", "MCP_PORT": "18000",
     "TIMER_NOTIFY_SERVICE": "notify.mobile_app_test", "MUSIC_MPV_AO": "null", "MUSIC_START_TIMEOUT": "8",
     "HASS_CONFIRM_ENTITIES": "switch.caldaia", "HASS_BLOCKED_ENTITIES": "camera.*",
+    "SMTP_HOST": "smtp.test", "SMTP_USER": "bot@test.it", "SMTP_PASSWORD": "pw",
+    "WHATSAPP_BACKEND": "waha", "WAHA_URL": "http://127.0.0.1:18080", "WAHA_API_KEY": "waha-key",
 })
 os.environ.pop("HTTPS_PROXY", None); os.environ.pop("https_proxy", None)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -53,6 +55,30 @@ class FakeYT:
         return {"url": f"http://cdn.example/{vid}.m4a", "titolo": vid, "thumb": ""}
 srv.LETTORE.yt = FakeYT()
 srv.Brano.url = property(lambda self: str(WAV / f"{self.video_id}.wav"))
+
+# --- SMTP finto ---
+SMTP_LOG = []
+class FakeSMTP:
+    def __init__(self, host, port, timeout=None):
+        SMTP_LOG.append(("connect", host, port))
+    def starttls(self, context=None):
+        SMTP_LOG.append(("starttls",))
+    def login(self, utente, password):
+        if password != "pw":
+            raise srv.smtplib.SMTPAuthenticationError(535, b"bad credentials")
+        SMTP_LOG.append(("login", utente))
+    def send_message(self, msg):
+        SMTP_LOG.append(("send", msg))
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+srv.smtplib.SMTP = FakeSMTP
+
+import re as re_t
+def codice(t):
+    m = re_t.search(r"codice_conferma='([0-9A-F]{6})'", t)
+    return m.group(1) if m else ""
 
 from mcp.client.streamable_http import streamablehttp_client
 from mcp import ClientSession
@@ -132,6 +158,66 @@ async def main():
             check("chiedi_all_utente: domanda aperta", "Risposte valide" not in t and "Come si chiama il tuo gatto?" in t, t)
             t = testo(await call("chiedi_all_utente", domanda="  "))
             check("chiedi_all_utente: domanda vuota", "vuota" in t, t)
+
+            # --- rubrica, email, whatsapp (conferma in chat) ---
+            t = testo(await call("rubrica_cerca")); check("rubrica vuota", "Nessun contatto" in t, t)
+            t = testo(await call("invia_email", destinatario="io", oggetto="Perdita d'acqua", testo="Gentile amministratore, segnalo una perdita."))
+            check("email: senza indirizzo chiede a quale email", "A quale indirizzo email te la mando?" in t and "rubrica_salva(nome='io'" in t, t)
+            t = testo(await call("rubrica_salva", nome="io", email="non-valida")); check("rubrica: email non valida", "non valido" in t, t)
+            t = testo(await call("rubrica_salva", nome="io", email="andrea@example.com")); check("rubrica: salva email utente", "andrea@example.com" in t, t)
+            t = testo(await call("invia_email", destinatario="me", oggetto="Perdita d'acqua", testo="Gentile amministratore, segnalo una perdita.",
+                                 allegati=[W + "/img/pasta.png"]))
+            cod = codice(t)
+            check("email: chiede conferma 'Mando la mail a ...?' senza inviare",
+                  "Mando la mail a andrea@example.com?" in t and cod and not any(x[0] == "send" for x in SMTP_LOG), t)
+            t = testo(await call("invia_email", codice_conferma=cod))
+            inviati = [x[1] for x in SMTP_LOG if x[0] == "send"]
+            check("email: inviata dopo conferma", "Email inviata a andrea@example.com" in t and len(inviati) == 1, t)
+            m = inviati[-1]
+            allegati_m = [(a.get_filename(), a.get_content_type()) for a in m.iter_attachments()]
+            check("email: intestazioni, STARTTLS, login e allegato immagine",
+                  m["To"] == "andrea@example.com" and m["Subject"] == "Perdita d'acqua" and ("starttls",) in SMTP_LOG
+                  and ("login", "bot@test.it") in SMTP_LOG and allegati_m == [("pasta.png", "image/png")], (dict(m.items()), allegati_m))
+            t = testo(await call("invia_email", codice_conferma=cod)); check("email: codice non riutilizzabile", "non valido" in t, t)
+            t = testo(await call("invia_email", codice_conferma="ABC123")); check("email: codice inventato rifiutato", "non valido" in t, t)
+            t = testo(await call("invia_email", destinatario="amministratore condominio", testo="Buongiorno"))
+            check("email: contatto sconosciuto -> chiede l'indirizzo", "Qual è l'indirizzo email di amministratore condominio?" in t, t)
+            await call("rubrica_salva", nome="Amministratore Condominio", email="admin@condominio.it")
+            t = testo(await call("invia_email", destinatario="amministratore", testo="Buongiorno"))
+            check("email: contatto trovato per nome parziale", "Mando la mail a amministratore condominio all'indirizzo admin@condominio.it?" in t, t)
+            t = testo(await call("invia_email", destinatario="io", testo="x", allegati=["/etc/passwd"]))
+            check("email: allegati fuori workspace bloccati", "fuori dal workspace" in t, t)
+            srv.SMTP_PASSWORD = "sbagliata"
+            t = testo(await call("invia_email", destinatario="io", testo="prova"))
+            t = testo(await call("invia_email", codice_conferma=codice(t)))
+            check("email: credenziali errate -> messaggio chiaro", "password per le app" in t, t)
+            srv.SMTP_PASSWORD = "pw"
+
+            t = testo(await call("invia_whatsapp", destinatario="io", testo="Ecco le immagini", immagini=[W + "/img/pasta.png"]))
+            check("whatsapp: senza numero chiede a quale numero", "A quale numero WhatsApp te lo mando?" in t and "telefono=" in t, t)
+            t = testo(await call("rubrica_salva", nome="io", telefono="340 343 4334"))
+            check("rubrica: numero normalizzato, email mantenuta", "telefono 3403434334" in t and "andrea@example.com" in t, t)
+            t = testo(await call("invia_whatsapp", destinatario="io", testo="Ecco le immagini", immagini=[W + "/img/pasta.png"]))
+            cod = codice(t)
+            check("whatsapp: chiede conferma 'Mando il messaggio ... al numero ...?'",
+                  "Mando il messaggio con un'immagine al numero 3403434334?" in t and cod and not mocks.WA, t)
+            t = testo(await call("invia_whatsapp", codice_conferma=cod))
+            import base64 as b64
+            check("whatsapp (WAHA): testo + immagine inviati", "inviato al numero 3403434334" in t and len(mocks.WA) == 2
+                  and mocks.WA[0][1]["chatId"] == "393403434334@c.us" and mocks.WA[0][1]["text"] == "Ecco le immagini"
+                  and mocks.WA[1][0] == "/api/sendImage" and b64.b64decode(mocks.WA[1][1]["file"]["data"])[:4] == b"\x89PNG", (t, mocks.WA[:1]))
+            t = testo(await call("invia_whatsapp", destinatario="+44 7700 900123", testo="ciao"))
+            check("whatsapp: numero estero", "al numero +447700900123?" in t, t)
+            srv.WHATSAPP_BACKEND, srv.CALLMEBOT_PHONE, srv.CALLMEBOT_APIKEY, srv.CALLMEBOT_URL = "callmebot", "3403434334", "cmb", W + "/callmebot"
+            t = testo(await call("invia_whatsapp", destinatario="3471112223", testo="ciao"))
+            t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
+            check("whatsapp (CallMeBot): solo al proprio numero", "solo al proprio numero" in t, t)
+            t = testo(await call("invia_whatsapp", destinatario="io", testo="Immagini", immagini=W + "/img/pasta.png"))
+            t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
+            q = mocks.WA[-1][1]
+            check("whatsapp (CallMeBot): testo con link all'immagine", "inviato" in t and q["phone"] == "+393403434334" and "/img/pasta.png" in q["text"], (t, q))
+            srv.WHATSAPP_BACKEND = "waha"
+            check("invii registrati nel log", (DATA / "invii.log").read_text().count("\n") == 3, (DATA / "invii.log").read_text())
 
             # --- web ---
             t = testo(await call("leggi_pagina_web", url=W + "/articolo"))
@@ -277,6 +363,8 @@ async def main():
         schema = params.requestedSchema["properties"]
         if "Rifiuta" in params.message:
             return mtypes.ElicitResult(action="decline")
+        if "conferma" in schema:
+            return mtypes.ElicitResult(action="accept", content={"conferma": "NON CONFERMARE" not in params.message})
         if "scelte" in schema:
             return mtypes.ElicitResult(action="accept", content={"scelte": ["Cucina", "Bagno"]})
         if "scelta" in schema:
@@ -296,6 +384,12 @@ async def main():
             check("elicitation: risposta libera", "ha risposto: Micio" in t, t)
             t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Rifiuta questa domanda"}))
             check("elicitation: utente rifiuta", "preferito non rispondere" in t, t)
+            n_inv = len([x for x in SMTP_LOG if x[0] == "send"])
+            t = testo(await s2.call_tool("invia_email", {"destinatario": "io", "oggetto": "Test", "testo": "Ciao"}))
+            check("elicitation: conferma invio email con modulo", "Email inviata" in t and len([x for x in SMTP_LOG if x[0] == "send"]) == n_inv + 1
+                  and "Mando la mail a andrea@example.com?" in risposte[-1].message, t)
+            t = testo(await s2.call_tool("invia_email", {"destinatario": "io", "testo": "NON CONFERMARE"}))
+            check("elicitation: invio non confermato dal modulo", "annullato" in t and len([x for x in SMTP_LOG if x[0] == "send"]) == n_inv + 1, t)
     # client senza supporto elicitation -> ripiego sulla domanda in chat
     async with streamablehttp_client("http://127.0.0.1:18000/", headers=hdr) as (rd, wr, _):
         async with ClientSession(rd, wr) as s3:

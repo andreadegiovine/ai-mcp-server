@@ -240,10 +240,29 @@ async def fx(req):
     return JSONResponse({"date": "2026-11-17", "rates": {req.query_params["symbols"]: 1.0832}})
 
 
+WA = []  # richieste ricevute dal gateway WhatsApp finto
+
+
+async def waha(req):
+    if req.headers.get("x-api-key") != "waha-key":
+        return JSONResponse({"error": "unauthorized"}, 401)
+    WA.append((req.url.path, await req.json()))
+    return JSONResponse({"id": f"msg{len(WA)}"})
+
+
+async def callmebot(req):
+    WA.append(("callmebot", dict(req.query_params)))
+    if req.query_params.get("apikey") != "cmb":
+        return HTMLResponse("APIKey is invalid", 200)
+    return HTMLResponse("<p>Message queued. You will receive it in a few seconds.</p>")
+
+
 web_app = Starlette(routes=[
     Route("/articolo", articolo), Route("/img/pasta.png", img), Route("/doc.pdf", pdf), Route("/file.bin", big),
     Route("/redirect-locale", redirect_locale), Route("/geo", geo), Route("/forecast", forecast),
     Route("/rss", news), Route("/fx/latest", fx),
+    Route("/api/sendText", waha, methods=["POST"]), Route("/api/sendImage", waha, methods=["POST"]),
+    Route("/callmebot", callmebot),
 ])
 
 

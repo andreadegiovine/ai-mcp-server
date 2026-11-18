@@ -19,6 +19,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Home Assistant](#home-assistant)
 - [Musica](#musica)
 - [Domande all'utente](#domande-allutente)
+- [Email e WhatsApp](#email-e-whatsapp)
 - [Timer e sveglie](#timer-e-sveglie)
 - [Google Calendar](#google-calendar)
 - [Sicurezza](#sicurezza)
@@ -30,7 +31,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 
 ## Strumenti disponibili
 
-Il server espone **41 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google. Puoi nasconderne altri con `DISABLED_TOOLS`.
+Il server espone **46 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google, email e WhatsApp solo se configurati. Puoi nasconderne altri con `DISABLED_TOOLS`.
 
 ### Generali
 | Tool | Cosa fa |
@@ -80,6 +81,13 @@ Il server espone **41 tool**, divisi in gruppi. Un gruppo non configurato viene 
 | `musica_controlla` | Pausa, riprendi, stop, successivo, precedente, volume, attiva o disattiva la radio |
 | `musica_aggiungi_in_coda` / `musica_stato` | Aggiunge un brano come prossimo; mostra cosa sta suonando e la coda |
 | `calendario_eventi` / `calendario_crea_evento` / `calendario_modifica_evento` / `calendario_elimina_evento` / `calendario_lista` | Google Calendar completo |
+
+### Rubrica, email e WhatsApp
+| Tool | Cosa fa |
+|---|---|
+| `rubrica_salva` / `rubrica_cerca` / `rubrica_elimina` | Rubrica di contatti con email e numero WhatsApp; `io` indica l'utente stesso |
+| `invia_email` | Invia un'email con eventuali allegati (immagini da URL o file del workspace), **sempre con conferma** |
+| `invia_whatsapp` | Invia un messaggio WhatsApp con testo e/o immagini, **sempre con conferma** |
 
 ---
 
@@ -250,7 +258,7 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `WORKSPACE_DIR` | `DATA_DIR/workspace` | Area di lavoro dell'agente |
 | `TIMEZONE` | `Europe/Rome` | Fuso orario |
 | `DISABLED_TOOLS` | – | Tool da nascondere, separati da virgola |
-| `ENABLE_TERMINAL` / `ENABLE_HASS` / `ENABLE_MUSIC` / `ENABLE_CALENDAR` | `true` | Attivano o disattivano interi gruppi |
+| `ENABLE_TERMINAL` / `ENABLE_HASS` / `ENABLE_MUSIC` / `ENABLE_CALENDAR` / `ENABLE_EMAIL` / `ENABLE_WHATSAPP` | `true` | Attivano o disattivano interi gruppi |
 | `ENABLE_ELICITATION` | `true` | Domande all'utente con modulo interattivo se il client lo supporta, altrimenti testuali; `false` = modalità senza sessione (vedi [Domande all'utente](#domande-allutente)) |
 | `ELICITATION_TIMEOUT` | `300` | Secondi di attesa della risposta nel modulo interattivo |
 
@@ -301,6 +309,24 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `TERMINAL_MAX_OUTPUT` | `12000` | Caratteri massimi di output restituiti |
 | `TERMINAL_MAX_TIMEOUT` | `900` | Timeout massimo di un comando, in secondi |
 | `DOWNLOAD_MAX_MB` | `200` | Dimensione massima di `scarica_file` |
+
+### Email (SMTP)
+| Variabile | Default | Descrizione |
+|---|---|---|
+| `SMTP_HOST` | – | Server SMTP (Gmail: `smtp.gmail.com`). Senza, lo strumento email è nascosto |
+| `SMTP_PORT` | `587` | `587` con STARTTLS, `465` con SSL |
+| `SMTP_USER` / `SMTP_PASSWORD` | – | Credenziali (Gmail: indirizzo e *password per le app*) |
+| `SMTP_FROM` / `SMTP_NOME` | `SMTP_USER` / `Assistente` | Mittente e nome visualizzato |
+| `SMTP_STARTTLS` | `true` | STARTTLS sulla porta 587 |
+| `ALLEGATI_MAX_MB` | `20` | Dimensione massima totale degli allegati (vale anche per le immagini WhatsApp) |
+
+### WhatsApp
+| Variabile | Default | Descrizione |
+|---|---|---|
+| `WHATSAPP_BACKEND` | – | `waha` oppure `callmebot`. Senza, lo strumento WhatsApp è nascosto |
+| `WAHA_URL` / `WAHA_API_KEY` / `WAHA_SESSION` | – / – / `default` | Indirizzo, chiave e sessione del gateway WAHA |
+| `CALLMEBOT_APIKEY` / `CALLMEBOT_PHONE` | – | Chiave ricevuta da CallMeBot e il tuo numero |
+| `WHATSAPP_PREFISSO` | `39` | Prefisso aggiunto ai numeri scritti senza `+` |
 
 ### Google Calendar
 | Variabile | Descrizione |
@@ -375,6 +401,61 @@ Lo strumento funziona in due modalità.
 
 ---
 
+## Email e WhatsApp
+
+### Come funziona l'invio
+1. **Destinatario.** `destinatario` può essere `io` (tu stesso: "mandamela per email"), il nome di un contatto ("amministratore condominio") o direttamente un indirizzo o un numero.
+2. **Recapito mancante.** Se in rubrica non c'è, lo strumento non invia nulla e dice al modello di chiederlo: "A quale indirizzo email te la mando?", "A quale numero WhatsApp te lo mando?", "Qual è l'indirizzo email di amministratore condominio?". Quando rispondi, il modello lo salva con `rubrica_salva` e riprova.
+3. **Conferma obbligatoria.** Con il recapito in rubrica, la prima chiamata **non invia**: prepara il messaggio e chiede "Mando la mail a tuoindirizzo@gmail.com?" oppure "Mando il messaggio con 3 immagini al numero 3403434334?".
+4. **Invio.** Solo dopo il tuo sì il modello richiama lo strumento con un codice di conferma monouso, valido 15 minuti. Il codice porta con sé il messaggio preparato: dopo la conferma il modello non può cambiare destinatario, testo o allegati.
+
+Se il client supporta i moduli interattivi (vedi [Domande all'utente](#domande-allutente)), la conferma appare come modulo con una casella da spuntare. Ogni invio riuscito viene registrato in `data/invii.log`.
+
+> **Limite della conferma in chat.** Senza moduli interattivi, la conferma passa dal modello: lo strumento garantisce che ci sia un passaggio di anteprima e che il contenuto confermato non cambi, ma è il modello a dover aspettare davvero il tuo "sì". Con modelli locali piccoli conviene ricordarlo nel prompt di sistema ("non inviare mai email o messaggi senza la mia conferma esplicita").
+
+### Esempi
+- *"Prepara una email per l'amministratore di condominio sulla perdita d'acqua"*, poi *"mandamela per email"*: il modello usa `invia_email(destinatario="io", ...)`.
+- *"Cerca immagini di GTA 6 e mandamele su WhatsApp"*: `cerca_immagini`, poi `invia_whatsapp(destinatario="io", immagini=[...])`.
+
+### Configurare l'email (Gmail)
+1. Attiva la verifica in due passaggi sull'account Google.
+2. Crea una **password per le app** (Account Google → Sicurezza → Password per le app).
+3. Nel `.env`:
+   ```
+   SMTP_HOST=smtp.gmail.com
+   SMTP_PORT=587
+   SMTP_USER=tuoindirizzo@gmail.com
+   SMTP_PASSWORD=la-password-per-le-app
+   ```
+   Con altri provider usa i loro dati SMTP.
+
+### Configurare WhatsApp
+WhatsApp non offre un'API ufficiale semplice per uso personale. Il server supporta due gateway:
+
+| | **WAHA** (consigliato) | **CallMeBot** |
+|---|---|---|
+| Cos'è | Gateway self-hosted in Docker, collegato al tuo WhatsApp come dispositivo associato (QR code) | Servizio online gratuito |
+| Destinatari | Qualsiasi numero | Solo il tuo numero |
+| Immagini | Sì, inviate come foto | No: vengono inviati i link |
+| Rischi | Non ufficiale: WhatsApp può bloccare il numero, soprattutto con molti messaggi. Meglio un numero secondario | Dipende da un servizio esterno |
+
+**WAHA:** installalo con Docker su un container o una VM di Proxmox, seguendo la [documentazione ufficiale](https://waha.devlike.pro). Imposta una chiave API, avvia la sessione (`default`) e collega il telefono con il QR code dalla dashboard. Poi nel `.env`:
+```
+WHATSAPP_BACKEND=waha
+WAHA_URL=http://IP_DEL_GATEWAY:3000
+WAHA_API_KEY=la-chiave-di-waha
+```
+Fino a poco tempo fa l'invio di immagini richiedeva la versione a pagamento (Plus); secondo la documentazione attuale tutte le funzioni sono gratuite. Se l'invio delle immagini fallisce, controlla la versione installata.
+
+**CallMeBot:** segui le istruzioni su [callmebot.com](https://www.callmebot.com): aggiungi il loro numero ai contatti e invia il messaggio di attivazione ("I allow callmebot to send me messages"). Riceverai una chiave. Poi:
+```
+WHATSAPP_BACKEND=callmebot
+CALLMEBOT_PHONE=3403434334
+CALLMEBOT_APIKEY=la-chiave-ricevuta
+```
+
+---
+
 ## Timer e sveglie
 
 - **Formati:** `timer_imposta(durata="10m")`, `"1h30m"`, `"1 ora e 15 minuti"`, `"mezz'ora"`, `"00:05:00"`; un numero senza unità vale minuti.
@@ -426,7 +507,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
    useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data && chown root:root /opt/mcp-server/.env && chmod 600 /opt/mcp-server/.env
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `EnvironmentFile=` (systemd legge i segreti come root), `ProtectSystem=strict` e `NoNewPrivileges`.
-3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123) e il DNS; blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
+3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WAHA; blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 4. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 5. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
 
@@ -440,11 +521,11 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 139 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 164 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, WAHA e CallMeBot), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
-Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, e le API reali di Google Calendar.
+Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero, WAHA e CallMeBot.
 
 ---
 
@@ -478,4 +559,6 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
 | Le aree non compaiono nella ricerca HA | Il token deve appartenere a un utente admin (per `/api/template`) |
 | La musica non parte | Aggiorna `yt-dlp`, installa deno; per la riproduzione locale servono `mpv` e un'uscita audio |
+| L'email non parte: "Credenziali SMTP rifiutate" | Con Gmail serve una password per le app, non la password dell'account |
+| WhatsApp: errore dal gateway | Controlla in WAHA che la sessione sia collegata al telefono e che la chiave coincida con `WAHA_API_KEY` |
 | Un timer non notifica | Controlla `TIMER_NOTIFY_SERVICE` e il log del servizio (`journalctl -u mcp-server`) |

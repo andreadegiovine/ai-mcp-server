@@ -25,7 +25,17 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 - ✅ Primo collaudo con OpenWebUI: la modalità con sessione funziona; OpenWebUI non mostra i moduli interattivi, quindi le domande passano da sole alla chat
 - ✅ Domande in chat più adatte ai modelli locali: il server prepara la frase già pronta da dire (es. "Scegli un numero da 1 a 5: 1, 2, 3, 4 oppure 5?"), istruzioni più brevi, niente elenco ridondante "1. 1"; regola "rispondi sempre in italiano" anche nelle istruzioni del server (il modello aveva inserito parole in cinese); log che indica quando la domanda passa in chat (**141/141 superati**)
 
+- ✅ **Rubrica, email e WhatsApp**
+  - `rubrica_salva` / `rubrica_cerca` / `rubrica_elimina`: contatti con email e numero; `io` indica l'utente; numeri normalizzati (prefisso `39` predefinito)
+  - `invia_email` (SMTP, allegati da URL o workspace) e `invia_whatsapp` (WAHA self-hosted o CallMeBot)
+  - Flusso: recapito mancante → il modello chiede "A quale indirizzo email te la mando?" e lo salva in rubrica; recapito presente → "Mando la mail a ...?"; invio solo dopo la conferma, con codice monouso che blocca destinatario e contenuto
+  - Conferma con modulo interattivo quando il client lo supporta; registro degli invii in `data/invii.log`
+  - 23 nuovi test con SMTP, WAHA e CallMeBot simulati (**164/164 superati**)
+
 ### Decisioni prese
+- Email via SMTP (universale; con Gmail basta una password per le app) invece delle API Gmail
+- WhatsApp tramite gateway configurabile: WAHA (qualsiasi numero, immagini, ma non ufficiale, con rischio di blocco del numero) oppure CallMeBot (solo al proprio numero, solo testo). Le API ufficiali Meta sono escluse per complessità (account business, modelli di messaggio)
+- La conferma obbligatoria usa un codice monouso legato al messaggio preparato: il modello non puo' cambiare destinatario o contenuto dopo la conferma
 - L'elicitation funziona solo con server con sessione e risposte in streaming (verificato: con `stateless_http` + `json_response` la richiesta al client non arriva)
 - `ENABLE_ELICITATION` **attiva di default**: se il client non supporta i moduli, le domande tornano testuali da sole. Il cambio di trasporto (sessione + streaming) non è ancora stato provato con OpenWebUI; in caso di problemi `ENABLE_ELICITATION=false` ripristina la modalità originale
 - I titoli sono frasi naturali in italiano, pensate per l'integrazione futura con un servizio vocale; i nomi tecnici dei tool (`hass_cerca_entita`, ...) non cambiano, quindi le configurazioni esistenti restano valide
@@ -86,6 +96,7 @@ Server MCP v1 con 6 tool: data/ora, ricerca Google con Playwright, lettura pagin
 
 - ⏳ Primo deploy su Proxmox e verifica dal vivo di ricerca, musica e calendario
 - ⏳ Collaudo con OpenWebUI: visualizzazione delle immagini restituite dai tool e scelta dei tool da tenere attivi per il modello in uso
+- ⏳ Provare l'invio reale di email (Gmail) e WhatsApp (WAHA o CallMeBot)
 - ⏳ Verificare con OpenWebUI la modalità con sessione (default) e se mostra i moduli interattivi; in caso di problemi usare `ENABLE_ELICITATION=false`
 - 💡 Sandbox dei comandi del terminale con bubblewrap (visibilità limitata al solo workspace)
 - 💡 Musica tramite Music Assistant, come alternativa a yt-dlp per gli altoparlanti di HA

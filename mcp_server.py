@@ -22,6 +22,7 @@ Gruppi di strumenti
   * Musica       : riproduzione da YouTube stile Alexa (continua con brani simili),
                    su un media_player di Home Assistant o in locale con mpv
   * Calendario   : Google Calendar (lettura, creazione, modifica, eliminazione eventi)
+  * Invii        : rubrica contatti, email (SMTP) e WhatsApp (WAHA o CallMeBot), sempre con conferma
 
 Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
 ------------------------------------------------------------------------------
@@ -65,6 +66,15 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
     MUSIC_MPV_AO=                    # opzionale, passato a mpv --ao (es. pulse, alsa)
     MUSIC_DEFAULT_VOLUME=60
 
+  Email (SMTP; per Gmail: smtp.gmail.com, porta 587, "password per le app")
+    SMTP_HOST=  SMTP_PORT=587  SMTP_USER=  SMTP_PASSWORD=  SMTP_FROM=  SMTP_NOME=Assistente
+
+  WhatsApp
+    WHATSAPP_BACKEND=                # "waha" (gateway self-hosted) oppure "callmebot" (solo al tuo numero)
+    WAHA_URL=http://IP:3000  WAHA_API_KEY=  WAHA_SESSION=default
+    CALLMEBOT_APIKEY=  CALLMEBOT_PHONE=
+    WHATSAPP_PREFISSO=39             # prefisso internazionale aggiunto ai numeri senza "+"
+
   Google Calendar (uno dei due metodi)
     GOOGLE_SERVICE_ACCOUNT_FILE=/percorso/service_account.json
         -> condividi il tuo calendario con l'email del service account ("Apporta modifiche agli eventi")
@@ -98,9 +108,12 @@ import operator
 import os
 import re
 import secrets
+import mimetypes
 import shutil
 import signal
+import smtplib
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -114,6 +127,8 @@ from collections import deque
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from difflib import SequenceMatcher
+from email.message import EmailMessage
+from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
 from urllib.parse import quote, quote_plus, urljoin, urlparse, parse_qs
@@ -282,6 +297,26 @@ GOOGLE_CALENDAR_IDS = _env_list("GOOGLE_CALENDAR_IDS", "primary")
 GOOGLE_DELEGATED_USER = _env("GOOGLE_DELEGATED_USER")
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
+# --- Email (SMTP) ---
+SMTP_HOST = _env("SMTP_HOST")
+SMTP_PORT = _env_int("SMTP_PORT", 587)
+SMTP_USER = _env("SMTP_USER")
+SMTP_PASSWORD = _env("SMTP_PASSWORD")
+SMTP_FROM = _env("SMTP_FROM") or SMTP_USER
+SMTP_NOME = _env("SMTP_NOME", "Assistente")
+SMTP_STARTTLS = _env_bool("SMTP_STARTTLS", True)
+
+# --- WhatsApp ---
+WHATSAPP_BACKEND = _env("WHATSAPP_BACKEND").lower()
+WAHA_URL = _env("WAHA_URL").rstrip("/")
+WAHA_API_KEY = _env("WAHA_API_KEY")
+WAHA_SESSION = _env("WAHA_SESSION", "default")
+CALLMEBOT_APIKEY = _env("CALLMEBOT_APIKEY")
+CALLMEBOT_PHONE = _env("CALLMEBOT_PHONE")
+CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
+WHATSAPP_PREFISSO = _env("WHATSAPP_PREFISSO", "39").lstrip("+")
+ALLEGATI_MAX_MB = _env_int("ALLEGATI_MAX_MB", 20)
+
 FEATURES = {
     "web": async_playwright is not None,
     "terminal": _env_bool("ENABLE_TERMINAL", True),
@@ -289,6 +324,10 @@ FEATURES = {
     "music": _env_bool("ENABLE_MUSIC", True) and yt_dlp is not None,
     "calendar": _env_bool("ENABLE_CALENDAR", True)
     and (bool(GOOGLE_SA_FILE and Path(GOOGLE_SA_FILE).is_file()) or Path(GOOGLE_TOKEN_FILE).is_file()),
+    "email": _env_bool("ENABLE_EMAIL", True) and bool(SMTP_HOST and SMTP_FROM),
+    "whatsapp": _env_bool("ENABLE_WHATSAPP", True) and (
+        (WHATSAPP_BACKEND == "waha" and bool(WAHA_URL))
+        or (WHATSAPP_BACKEND == "callmebot" and bool(CALLMEBOT_APIKEY and CALLMEBOT_PHONE))),
 }
 
 # =============================================================================
@@ -1631,6 +1670,17 @@ async def converti_valuta(importo: float, da: str, a: str) -> str:
 # =============================================================================
 # DOMANDE ALL'UTENTE
 # =============================================================================
+def client_supporta_moduli(ctx: Optional[Context]) -> bool:
+    """True se i moduli interattivi sono abilitati e il client dichiara il supporto all'elicitation."""
+    if not ENABLE_ELICITATION or ctx is None:
+        return False
+    try:
+        params = ctx.session.client_params
+        return bool(params and params.capabilities and params.capabilities.elicitation is not None)
+    except Exception:
+        return False
+
+
 def _lista_opzioni(opzioni: Union[list[str], str, None]) -> list[str]:
     if not opzioni:
         return []
@@ -1721,12 +1771,7 @@ async def chiedi_all_utente(domanda: str, opzioni: Union[list[str], str, None] =
     libera = risposta_libera or not voci
 
     # Modulo interattivo (elicitation MCP), solo se abilitato e supportato dal client
-    supportato = False
-    if ENABLE_ELICITATION and ctx is not None:
-        with contextlib.suppress(Exception):
-            params = ctx.session.client_params
-            supportato = bool(params and params.capabilities and params.capabilities.elicitation is not None)
-    if supportato:
+    if client_supporta_moduli(ctx):
         try:
             esito = await asyncio.wait_for(
                 ctx.elicit(domanda, _modulo_domanda(voci, libera, scelta_multipla)), ELICITATION_TIMEOUT)
@@ -1822,6 +1867,436 @@ async def memoria_elimina(id: str) -> str:
         raise UserError(f"Nessuna voce con id '{id}'.")
     MEMORIA.save(nuovi)
     return f"Voce {id} eliminata."
+
+
+# =============================================================================
+# RUBRICA, EMAIL E WHATSAPP (invio sempre con conferma dell'utente)
+# =============================================================================
+RUBRICA = JsonStore(DATA_DIR / "rubrica.json", [])
+_ALIAS_IO = {"io", "me", "a me", "mio", "mia", "mie", "miei", "me stesso", "me stessa", "utente", "l utente",
+             "il mio", "la mia", "mia email", "mio numero", "my", "myself"}
+_RE_EMAIL = re.compile(r"^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$")
+_RE_TELEFONO = re.compile(r"^[+\d][\d\s\-.()/]{5,}$")
+
+
+def chiave_contatto(nome: str) -> str:
+    n = normalizza(nome)
+    return "io" if n in _ALIAS_IO else n
+
+
+def nome_leggibile(chiave: str) -> str:
+    return "te" if chiave == "io" else chiave
+
+
+def normalizza_telefono(numero: str) -> str:
+    """'340 343 4334' -> '+393403434334' (aggiunge WHATSAPP_PREFISSO se manca il prefisso)."""
+    s = re.sub(r"[\s\-.()/]", "", numero or "")
+    if s.startswith("00"):
+        s = "+" + s[2:]
+    if not s.startswith("+"):
+        if s.startswith(WHATSAPP_PREFISSO) and len(s) > 10 + len(WHATSAPP_PREFISSO) - 1:
+            s = "+" + s
+        else:
+            s = "+" + WHATSAPP_PREFISSO + s
+    if not re.fullmatch(r"\+\d{8,15}", s):
+        raise UserError(f"Numero di telefono non valido: '{numero}'.")
+    return s
+
+
+def telefono_leggibile(numero: str) -> str:
+    pref = "+" + WHATSAPP_PREFISSO
+    return numero[len(pref):] if numero.startswith(pref) else numero
+
+
+def registra_invio(testo: str) -> None:
+    with contextlib.suppress(Exception):
+        with open(DATA_DIR / "invii.log", "a", encoding="utf-8") as fh:
+            fh.write(f"{now().isoformat(timespec='seconds')} {testo}\n")
+
+
+@tool(
+    "rubrica_salva",
+    title="Salva contatto",
+    description=(
+        "Salva o aggiorna un contatto nella rubrica (email e/o numero di telefono WhatsApp). Per i recapiti "
+        "dell'utente stesso usa nome='io'. Usalo SUBITO quando l'utente ti comunica un indirizzo email o un "
+        "numero, cosi' la prossima volta non dovrai chiederlo. I campi non indicati restano invariati."
+    ),
+)
+async def rubrica_salva(nome: str, email: str = "", telefono: str = "", note: str = "") -> str:
+    chiave = chiave_contatto(nome)
+    if not chiave:
+        raise UserError("Indica il nome del contatto ('io' per l'utente).")
+    email = email.strip()
+    if email and not _RE_EMAIL.match(email):
+        raise UserError(f"Indirizzo email non valido: '{email}'.")
+    tel = normalizza_telefono(telefono) if telefono.strip() else ""
+    if not email and not tel and not note.strip():
+        raise UserError("Indica almeno un'email o un numero di telefono.")
+    contatti = RUBRICA.load()
+    c = next((x for x in contatti if x["chiave"] == chiave), None)
+    if c is None:
+        c = {"chiave": chiave, "nome": "io" if chiave == "io" else nome.strip(), "email": "", "telefono": "",
+             "note": "", "creato": now().isoformat(timespec="seconds")}
+        contatti.append(c)
+    if email:
+        c["email"] = email
+    if tel:
+        c["telefono"] = tel
+    if note.strip():
+        c["note"] = note.strip()[:300]
+    RUBRICA.save(contatti)
+    return f"Contatto salvato: {_descr_contatto(c)}"
+
+
+def _descr_contatto(c: dict) -> str:
+    parti = [("io (l'utente)" if c["chiave"] == "io" else c["nome"])]
+    if c.get("email"):
+        parti.append(f"email {c['email']}")
+    if c.get("telefono"):
+        parti.append(f"telefono {telefono_leggibile(c['telefono'])}")
+    if c.get("note"):
+        parti.append(f"note: {c['note']}")
+    return " · ".join(parti)
+
+
+@tool(
+    "rubrica_cerca",
+    title="Cerca contatti",
+    description="Cerca nella rubrica (nome, email, telefono, note). Senza testo elenca tutti i contatti. 'io' indica l'utente stesso.",
+    read_only=True,
+)
+async def rubrica_cerca(testo: str = "") -> str:
+    contatti = RUBRICA.load()
+    if testo.strip():
+        toks = normalizza(testo).split()
+        contatti = [c for c in contatti if all(t in normalizza(" ".join(
+            str(c.get(k, "")) for k in ("chiave", "nome", "email", "telefono", "note"))) for t in toks)
+            or (chiave_contatto(testo) == "io" and c["chiave"] == "io")]
+    if not contatti:
+        return "Nessun contatto" + (f" per '{testo}'." if testo.strip() else " in rubrica.")
+    return f"{len(contatti)} contatti:\n" + "\n".join(f"- {_descr_contatto(c)}" for c in contatti)
+
+
+@tool(
+    "rubrica_elimina",
+    title="Elimina contatto",
+    description="Elimina un contatto dalla rubrica, oppure solo la sua email o il suo telefono (campo='email' o 'telefono').",
+    destructive=True,
+)
+async def rubrica_elimina(nome: str, campo: Literal["tutto", "email", "telefono"] = "tutto") -> str:
+    chiave = chiave_contatto(nome)
+    contatti = RUBRICA.load()
+    c = next((x for x in contatti if x["chiave"] == chiave), None)
+    if c is None:
+        raise UserError(f"Nessun contatto '{nome}' in rubrica.")
+    if campo == "tutto":
+        contatti.remove(c)
+        esito = f"Contatto '{nome_leggibile(chiave)}' eliminato."
+    else:
+        c[campo] = ""
+        esito = f"Rimosso il campo {campo} di '{nome_leggibile(chiave)}'."
+    RUBRICA.save(contatti)
+    return esito
+
+
+def risolvi_destinatario(destinatario: str, campo: Literal["email", "telefono"]) -> tuple[Optional[str], str, str]:
+    """
+    Ritorna (recapito, chiave_contatto, messaggio). Se il recapito manca, il messaggio spiega al modello
+    cosa chiedere all'utente e come salvare la risposta in rubrica.
+    """
+    d = (destinatario or "").strip() or "io"
+    if campo == "email" and _RE_EMAIL.match(d):
+        return d, d, ""
+    if campo == "telefono" and _RE_TELEFONO.match(d):
+        return normalizza_telefono(d), d, ""
+    chiave = chiave_contatto(d)
+    contatti = RUBRICA.load()
+    trovati = [c for c in contatti if c["chiave"] == chiave]
+    if not trovati and chiave != "io":
+        toks = chiave.split()
+        trovati = [c for c in contatti if c["chiave"] != "io" and all(t in c["chiave"] for t in toks)]
+    if len(trovati) > 1:
+        nomi = ", ".join(c["nome"] for c in trovati)
+        return None, chiave, (f"Ci sono piu' contatti che corrispondono a '{d}': {nomi}. Chiedi all'utente quale "
+                              f"intende e poi richiama lo strumento con il nome esatto.")
+    nome_tool = "invia_email" if campo == "email" else "invia_whatsapp"
+    if trovati and trovati[0].get(campo):
+        return trovati[0][campo], trovati[0]["chiave"], ""
+    if trovati:
+        chiave = trovati[0]["chiave"]
+    cosa = "indirizzo email" if campo == "email" else "numero WhatsApp"
+    if chiave == "io":
+        frase = ("A quale indirizzo email te la mando?" if campo == "email"
+                 else "A quale numero WhatsApp te lo mando?")
+    else:
+        frase = f"Qual è l'{cosa} di {trovati[0]['nome'] if trovati else d}?"
+    nome_salva = "io" if chiave == "io" else (trovati[0]["nome"] if trovati else d)
+    return None, chiave, (
+        f"Non ho un {cosa} per {nome_leggibile(chiave)}: l'invio non e' stato preparato.\n"
+        f"Frase da dire, in italiano (usala così com'è):\n{frase}\n"
+        f"Quando l'utente risponde: 1) salva il recapito con rubrica_salva(nome='{nome_salva}', "
+        f"{campo}='<recapito>'); 2) richiama {nome_tool} con destinatario='{nome_salva}' e gli stessi contenuti."
+    )
+
+
+_IN_ATTESA: dict[str, dict] = {}
+_ATTESA_SECONDI = 900
+
+
+def _crea_attesa(tipo: str, dati: dict) -> str:
+    adesso = time.time()
+    for k in [k for k, v in _IN_ATTESA.items() if v["scade"] < adesso]:
+        _IN_ATTESA.pop(k, None)
+    codice = secrets.token_hex(3).upper()
+    _IN_ATTESA[codice] = {"tipo": tipo, "dati": dati, "scade": adesso + _ATTESA_SECONDI}
+    return codice
+
+
+def _prendi_attesa(codice: str, tipo: str) -> dict:
+    voce = _IN_ATTESA.get(codice.strip().upper())
+    if not voce or voce["tipo"] != tipo or voce["scade"] < time.time():
+        raise UserError("Codice di conferma non valido, gia' usato o scaduto: prepara di nuovo l'invio "
+                        "e chiedi conferma all'utente.")
+    _IN_ATTESA.pop(codice.strip().upper(), None)
+    return voce["dati"]
+
+
+async def conferma_interattiva(ctx: Optional[Context], messaggio: str) -> Optional[bool]:
+    """Chiede conferma con un modulo (elicitation). None = modulo non disponibile."""
+    if not client_supporta_moduli(ctx):
+        return None
+    from pydantic import Field, create_model
+    modello = create_model("Conferma", conferma=(bool, Field(title="Confermi l'invio?")))
+    try:
+        esito = await asyncio.wait_for(ctx.elicit(messaggio, modello), ELICITATION_TIMEOUT)
+    except asyncio.TimeoutError:
+        return False
+    except Exception as e:
+        logger.warning(f"Conferma con modulo non riuscita, uso la conferma in chat: {e}")
+        return None
+    return esito.action == "accept" and bool(getattr(esito.data, "conferma", False))
+
+
+async def _chiedi_conferma(ctx: Optional[Context], tipo: str, dati: dict, frase: str, anteprima: str,
+                           nome_tool: str) -> Optional[str]:
+    """None = confermato (procedi con l'invio); altrimenti il testo da restituire al modello."""
+    esito = await conferma_interattiva(ctx, f"{frase}\n\n{anteprima}")
+    if esito is True:
+        return None
+    if esito is False:
+        return "L'utente non ha confermato: invio annullato."
+    codice = _crea_attesa(tipo, dati)
+    return (
+        "Invio NON ancora effettuato: serve la conferma esplicita dell'utente.\n"
+        f"Frase da dire, in italiano (usala così com'è):\n{frase}\n\n"
+        f"Anteprima (per te, non leggerla tutta):\n{anteprima}\n\n"
+        f"Solo se l'utente conferma (es. 'sì', 'ok', 'manda'), richiama {nome_tool} con "
+        f"codice_conferma='{codice}' e nessun altro parametro. Se rifiuta o chiede modifiche, non usare il codice. "
+        f"Non dire il codice all'utente. Il codice vale una sola volta e scade tra {_ATTESA_SECONDI // 60} minuti."
+    )
+
+
+def _controlla_allegati(allegati: list[str]) -> list[str]:
+    puliti = []
+    for a in allegati[:10]:
+        a = str(a).strip()
+        if not a:
+            continue
+        if a.startswith(("http://", "https://")):
+            controlla_url(a)
+        else:
+            p = percorso_workspace(a)
+            if not p.is_file():
+                raise UserError(f"Allegato non trovato nel workspace: {a}")
+        puliti.append(a)
+    return puliti
+
+
+def _carica_allegato(sorgente: str, max_bytes: int) -> tuple[bytes, str, str]:
+    """Ritorna (contenuto, nome_file, mime) di un URL o di un file del workspace."""
+    if sorgente.startswith(("http://", "https://")):
+        dati, headers, finale = http_get(sorgente, max_bytes=max_bytes, timeout=20)
+        nome = Path(urlparse(finale).path).name or "allegato"
+        mime = (headers.get("Content-Type") or headers.get("content-type") or "").split(";")[0].strip()
+    else:
+        p = percorso_workspace(sorgente)
+        if p.stat().st_size > max_bytes:
+            raise UserError(f"Allegato troppo grande: {sorgente}")
+        dati, nome, mime = p.read_bytes(), p.name, ""
+    if not mime or mime == "application/octet-stream":
+        mime = mimetypes.guess_type(nome)[0] or "application/octet-stream"
+    if "." not in nome:
+        nome += mimetypes.guess_extension(mime) or ""
+    return dati, nome, mime
+
+
+def _lista_testi(valore: Union[list[str], str, None]) -> list[str]:
+    if not valore:
+        return []
+    if isinstance(valore, list):
+        return [str(v) for v in valore]
+    return [v for v in re.split(r"[\s,]+", str(valore)) if v]
+
+
+# --- Email --------------------------------------------------------------------
+def _invia_email_sync(dati: dict) -> None:
+    msg = EmailMessage()
+    msg["From"] = formataddr((SMTP_NOME, SMTP_FROM))
+    msg["To"] = dati["a"]
+    msg["Subject"] = dati["oggetto"]
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid()
+    msg.set_content(dati["testo"])
+    residuo = ALLEGATI_MAX_MB * 1024 * 1024
+    for sorgente in dati["allegati"]:
+        contenuto, nome, mime = _carica_allegato(sorgente, residuo)
+        residuo -= len(contenuto)
+        principale, _, secondario = mime.partition("/")
+        msg.add_attachment(contenuto, maintype=principale, subtype=secondario or "octet-stream", filename=nome)
+    try:
+        if SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=30, context=ssl.create_default_context())
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30)
+            if SMTP_STARTTLS:
+                server.starttls(context=ssl.create_default_context())
+        with server:
+            if SMTP_USER:
+                server.login(SMTP_USER, SMTP_PASSWORD)
+            server.send_message(msg)
+    except smtplib.SMTPAuthenticationError:
+        raise UserError("Credenziali SMTP rifiutate. Con Gmail serve una 'password per le app' (account con verifica in due passaggi).")
+    except smtplib.SMTPRecipientsRefused:
+        raise UserError(f"Il server di posta ha rifiutato il destinatario {dati['a']}.")
+    except (smtplib.SMTPException, OSError) as e:
+        raise UserError(f"Invio email non riuscito: {type(e).__name__}: {e}")
+
+
+@tool(
+    "invia_email",
+    title="Invia email",
+    description=(
+        "Invia un'email (testo semplice, con eventuali allegati). destinatario: 'io' per l'utente stesso "
+        "(es. 'mandamela per email'), il nome di un contatto della rubrica (es. 'amministratore condominio') "
+        "oppure un indirizzo email. Se il recapito non e' in rubrica lo strumento ti dice cosa chiedere "
+        "all'utente e di salvarlo con rubrica_salva. L'invio richiede SEMPRE la conferma dell'utente: la prima "
+        "chiamata prepara l'email e ti restituisce la domanda di conferma; solo dopo il si' dell'utente "
+        "richiami lo strumento con il codice_conferma ricevuto. allegati: URL di immagini/file o percorsi del workspace."
+    ),
+    group="email",
+    destructive=True,
+)
+async def invia_email(destinatario: str = "io", oggetto: str = "", testo: str = "",
+                      allegati: Union[list[str], str, None] = None, codice_conferma: str = "",
+                      ctx: Optional[Context] = None) -> str:
+    if codice_conferma.strip():
+        dati = _prendi_attesa(codice_conferma, "email")
+    else:
+        if not testo.strip():
+            raise UserError("Il testo dell'email e' vuoto.")
+        indirizzo, chiave, messaggio = await asyncio.to_thread(risolvi_destinatario, destinatario, "email")
+        if not indirizzo:
+            return messaggio
+        dati = {"a": indirizzo, "chiave": chiave, "oggetto": (oggetto.strip() or "Messaggio dal tuo assistente")[:200],
+                "testo": testo.strip(), "allegati": await asyncio.to_thread(_controlla_allegati, _lista_testi(allegati))}
+        frase = (f"Mando la mail a {indirizzo}?" if chiave in ("io", indirizzo)
+                 else f"Mando la mail a {chiave} all'indirizzo {indirizzo}?")
+        anteprima = (f"A: {indirizzo}\nOggetto: {dati['oggetto']}\nTesto:\n{tronca(dati['testo'], 1500)}"
+                     + (f"\nAllegati: {len(dati['allegati'])}" if dati["allegati"] else ""))
+        attesa = await _chiedi_conferma(ctx, "email", dati, frase, anteprima, "invia_email")
+        if attesa is not None:
+            return attesa
+    await asyncio.to_thread(_invia_email_sync, dati)
+    registra_invio(f"EMAIL a={dati['a']} oggetto={dati['oggetto']!r} allegati={len(dati['allegati'])}")
+    return (f"Email inviata a {dati['a']} con oggetto '{dati['oggetto']}'"
+            + (f" e {len(dati['allegati'])} allegati." if dati["allegati"] else "."))
+
+
+# --- WhatsApp -----------------------------------------------------------------
+def _waha_post(percorso: str, corpo: dict) -> None:
+    headers = {"X-Api-Key": WAHA_API_KEY} if WAHA_API_KEY else {}
+    try:
+        r = requests.post(f"{WAHA_URL}{percorso}", json=corpo, headers=headers, timeout=60)
+    except requests.exceptions.RequestException as e:
+        raise UserError(f"Gateway WhatsApp (WAHA) non raggiungibile su {WAHA_URL}: {type(e).__name__}")
+    if r.status_code == 401:
+        raise UserError("Chiave del gateway WhatsApp non valida (WAHA_API_KEY).")
+    if r.status_code >= 400:
+        raise UserError(f"Il gateway WhatsApp ha risposto HTTP {r.status_code}: {r.text[:200]} "
+                        f"(la sessione '{WAHA_SESSION}' e' collegata al telefono?)")
+
+
+def _invia_whatsapp_sync(dati: dict) -> None:
+    numero, testo, immagini = dati["numero"], dati["testo"], dati["immagini"]
+    if WHATSAPP_BACKEND == "callmebot":
+        if numero != normalizza_telefono(CALLMEBOT_PHONE):
+            raise UserError("Con CallMeBot si possono inviare messaggi solo al proprio numero "
+                            f"({telefono_leggibile(normalizza_telefono(CALLMEBOT_PHONE))}).")
+        locali = [i for i in immagini if not i.startswith(("http://", "https://"))]
+        if locali:
+            raise UserError("CallMeBot non puo' inviare file: solo link a immagini online.")
+        corpo = "\n".join([testo] + immagini).strip()
+        try:
+            r = requests.get(CALLMEBOT_URL, params={"phone": numero, "text": corpo, "apikey": CALLMEBOT_APIKEY},
+                             timeout=30)
+        except requests.exceptions.RequestException as e:
+            raise UserError(f"CallMeBot non raggiungibile: {type(e).__name__}")
+        if r.status_code >= 400 or "error" in r.text.lower() or "invalid" in r.text.lower():
+            raise UserError(f"CallMeBot ha rifiutato il messaggio: {re.sub(r'<[^>]+>', ' ', r.text)[:200].strip()}")
+        return
+    chat = numero.lstrip("+") + "@c.us"
+    if testo:
+        _waha_post("/api/sendText", {"session": WAHA_SESSION, "chatId": chat, "text": testo})
+    residuo = ALLEGATI_MAX_MB * 1024 * 1024
+    for sorgente in immagini:
+        contenuto, nome, mime = _carica_allegato(sorgente, residuo)
+        residuo -= len(contenuto)
+        if not mime.startswith("image/"):
+            raise UserError(f"'{sorgente}' non e' un'immagine ({mime}).")
+        _waha_post("/api/sendImage", {"session": WAHA_SESSION, "chatId": chat, "caption": "",
+                                      "file": {"mimetype": mime, "filename": nome,
+                                               "data": base64.b64encode(contenuto).decode()}})
+
+
+@tool(
+    "invia_whatsapp",
+    title="Invia messaggio WhatsApp",
+    description=(
+        "Invia un messaggio WhatsApp con testo e/o immagini (es. 'cerca immagini di X e mandamele su WhatsApp': "
+        "passa gli URL trovati con cerca_immagini in 'immagini'). destinatario: 'io' per l'utente stesso, il nome "
+        "di un contatto della rubrica oppure un numero. Se il numero non e' in rubrica lo strumento ti dice cosa "
+        "chiedere all'utente e di salvarlo con rubrica_salva. L'invio richiede SEMPRE la conferma dell'utente: "
+        "la prima chiamata prepara il messaggio e ti restituisce la domanda di conferma; solo dopo il si' "
+        "dell'utente richiami lo strumento con il codice_conferma ricevuto."
+    ),
+    group="whatsapp",
+    destructive=True,
+)
+async def invia_whatsapp(destinatario: str = "io", testo: str = "", immagini: Union[list[str], str, None] = None,
+                         codice_conferma: str = "", ctx: Optional[Context] = None) -> str:
+    if codice_conferma.strip():
+        dati = _prendi_attesa(codice_conferma, "whatsapp")
+    else:
+        lista = await asyncio.to_thread(_controlla_allegati, _lista_testi(immagini))
+        if not testo.strip() and not lista:
+            raise UserError("Indica il testo del messaggio e/o le immagini da inviare.")
+        numero, chiave, messaggio = await asyncio.to_thread(risolvi_destinatario, destinatario, "telefono")
+        if not numero:
+            return messaggio
+        dati = {"numero": numero, "chiave": chiave, "testo": testo.strip()[:4000], "immagini": lista}
+        chi = "" if chiave == "io" or _RE_TELEFONO.match(chiave) else f"a {chiave} "
+        cosa = "il messaggio" + (f" con {len(lista)} immagini" if len(lista) > 1 else " con un'immagine" if lista else "")
+        frase = f"Mando {cosa} {chi}al numero {telefono_leggibile(numero)}?"
+        anteprima = (f"A: {numero}\nTesto: {tronca(dati['testo'], 800) or '(nessuno)'}"
+                     + (f"\nImmagini: {len(lista)}" if lista else ""))
+        attesa = await _chiedi_conferma(ctx, "whatsapp", dati, frase, anteprima, "invia_whatsapp")
+        if attesa is not None:
+            return attesa
+    await asyncio.to_thread(_invia_whatsapp_sync, dati)
+    registra_invio(f"WHATSAPP a={dati['numero']} immagini={len(dati['immagini'])} backend={WHATSAPP_BACKEND}")
+    return (f"Messaggio WhatsApp inviato al numero {telefono_leggibile(dati['numero'])}"
+            + (f" con {len(dati['immagini'])} immagini." if dati["immagini"] else "."))
 
 
 # =============================================================================
