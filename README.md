@@ -13,6 +13,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Strumenti disponibili](#strumenti-disponibili)
 - [Come funziona](#come-funziona)
 - [Installazione (Proxmox LXC + venv)](#installazione-proxmox-lxc--venv)
+- [Aggiornamento](#aggiornamento)
 - [Configurazione (.env)](#configurazione-env)
 - [Collegamento a OpenWebUI](#collegamento-a-openwebui)
 - [Home Assistant](#home-assistant)
@@ -156,6 +157,81 @@ journalctl -u mcp-server -f
 ```
 
 > Il file `.env` viene letto **solo all'avvio**: dopo ogni modifica esegui `systemctl restart mcp-server`.
+> Per aggiornare il codice vedi [Aggiornamento](#aggiornamento).
+
+---
+
+## Aggiornamento
+
+Comandi da eseguire come root nel container. I file `.env` e `data/` sono esclusi da git, quindi l'aggiornamento non tocca configurazione, memoria, timer e token.
+
+**1. Scarica il codice nuovo**
+
+```bash
+cd /opt/mcp-server && git pull
+```
+
+Se `git pull` si ferma per modifiche locali, controlla cosa hai cambiato con `git status` e `git diff`. Per scartarle e tornare alla versione del repository:
+
+```bash
+cd /opt/mcp-server && git stash && git pull
+```
+
+**2. Aggiorna le dipendenze**
+
+```bash
+/opt/mcp-server/venv/bin/pip install -U -r /opt/mcp-server/requirements.txt
+```
+
+`-U` aggiorna anche yt-dlp, che va tenuto aggiornato perché YouTube cambia spesso.
+
+**3. Aggiorna il browser**
+
+Serve solo se nel passo 2 si è aggiornato Playwright, perché ogni versione usa la sua build di Chromium. Rilanciarlo comunque non fa danni:
+
+```bash
+PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install chromium
+```
+
+**4. Controlla eventuali nuove variabili**
+
+Le variabili presenti in `.env.example` e assenti dal tuo `.env` usano il valore predefinito. Per vederle:
+
+```bash
+cd /opt/mcp-server && diff <(grep -oE '^#? ?[A-Z_]+=' .env.example | tr -d '# ' | sort -u) <(grep -oE '^[A-Z_]+=' .env | sort -u) | grep '^<'
+```
+
+Se il comando non stampa nulla, il tuo `.env` contiene già tutte le variabili dell'esempio.
+
+**5. Riavvia il servizio e controlla**
+
+```bash
+systemctl restart mcp-server && systemctl status mcp-server --no-pager
+```
+
+```bash
+journalctl -u mcp-server -n 30 --no-pager
+```
+
+Nel log, la riga `Tool attivi (...)` elenca i tool caricati.
+
+**Tutto in un solo comando** (passi 1, 2, 3 e 5):
+
+```bash
+cd /opt/mcp-server && git pull && venv/bin/pip install -U -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright venv/bin/playwright install chromium && systemctl restart mcp-server && journalctl -u mcp-server -n 30 --no-pager
+```
+
+**Tornare alla versione precedente** se qualcosa non va:
+
+```bash
+cd /opt/mcp-server && git log --oneline -5
+```
+
+```bash
+cd /opt/mcp-server && git checkout <commit> && systemctl restart mcp-server
+```
+
+Per tornare all'ultima versione dopo un `checkout`: `git checkout main && git pull`.
 
 ---
 

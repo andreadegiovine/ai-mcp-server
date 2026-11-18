@@ -6,7 +6,7 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
-## 2026-11-18 · Titoli dei tool adatti alla voce
+## 2026-11-18 · Titoli dei tool adatti alla voce e guida all'aggiornamento
 
 ### Attività svolte
 - ✅ Titoli dei tool resi leggibili da un sintetizzatore vocale: tolti parentesi, due punti e prefissi tecnici (OpenWebUI li mostra in chat come `Uso "<titolo>"...`). Esempi:
@@ -14,6 +14,7 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
   - `Home Assistant: cerca entità` → `Cerca dispositivi della casa`
   - `Google Calendar: crea evento` → `Crea evento nel calendario`
 - ✅ Nuovo test che controlla che ogni titolo contenga solo lettere e spazi (**124/124 superati**)
+- ✅ README: nuova sezione **Aggiornamento** (git pull, dipendenze, browser Playwright, confronto delle variabili del `.env`, riavvio del servizio, ritorno alla versione precedente)
 
 ### Decisioni prese
 - I titoli sono frasi naturali in italiano, pensate per l'integrazione futura con un servizio vocale; i nomi tecnici dei tool (`hass_cerca_entita`, ...) non cambiano, quindi le configurazioni esistenti restano valide
