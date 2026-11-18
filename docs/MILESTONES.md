@@ -36,6 +36,12 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 - ✅ **Rimossi i gateway WAHA e CallMeBot**: WhatsApp passa solo da OpenWA; non serve piu' `WHATSAPP_BACKEND`, lo strumento si attiva con `OPENWA_URL` e `OPENWA_SESSION_ID` (**164/164 superati**)
 
+- ✅ **Correzioni dopo il primo uso reale**
+  - Messaggio chiaro, con il comando da eseguire, quando Playwright viene aggiornato ma il suo Chromium non è installato (`Executable doesn't exist`)
+  - Le cartelle dati si creano solo all'avvio del servizio, non con `--check`: eseguito come root, creava un workspace di proprietà di root, non scrivibile dall'utente `mcp` (`PermissionError`)
+  - All'avvio il server segnala nel log i file di `data/` non scrivibili e il comando `chown` per sistemarli; gli errori di permesso nei tool hanno un messaggio comprensibile
+  - README: due nuove voci nei problemi comuni (**167/167 superati**)
+
 ### Decisioni prese
 - Email via SMTP (universale; con Gmail basta una password per le app) invece delle API Gmail
 - OpenWA preferito a WAHA: licenza MIT, nessuna funzione a pagamento, progetto molto diffuso. Il suo server MCP non viene collegato direttamente a OpenWebUI, per mantenere rubrica e conferma obbligatoria

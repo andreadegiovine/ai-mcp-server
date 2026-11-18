@@ -558,6 +558,8 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 | Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google: controlla con `--check` |
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
+| `PermissionError: [Errno 13] Permission denied: '/opt/mcp-server/data/...'` | Alcuni file di `data/` appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /opt/mcp-server/data` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |
+| Nel log: `Executable doesn't exist at /opt/ms-playwright/...` | Playwright è stato aggiornato ma il suo browser no: esegui `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install chromium` e riavvia il servizio (passo 3 di [Aggiornamento](#aggiornamento)) |
 | Le aree non compaiono nella ricerca HA | Il token deve appartenere a un utente admin (per `/api/template`) |
 | La musica non parte | Aggiorna `yt-dlp`, installa deno; per la riproduzione locale servono `mpv` e un'uscita audio |
 | L'email non parte: "Credenziali SMTP rifiutate" | Con Gmail serve una password per le app, non la password dell'account |

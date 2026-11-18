@@ -223,8 +223,6 @@ ELICITATION_TIMEOUT = _env_int("ELICITATION_TIMEOUT", 300)
 
 DATA_DIR = Path(_env("DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
 WORKSPACE_DIR = Path(_env("WORKSPACE_DIR", str(DATA_DIR / "workspace"))).expanduser().resolve()
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
 
 TZ_NAME = _env("TIMEZONE", "Europe/Rome")
 try:
@@ -399,6 +397,10 @@ def tool(
             except UserError as e:
                 logger.info(f"[{name}] {e}")
                 return f"⚠️ {e}"
+            except PermissionError as e:
+                logger.error(f"[{name}] permessi insufficienti: {e}. {suggerimento_permessi()}")
+                return (f"⚠️ Il server non ha i permessi per scrivere su {getattr(e, 'filename', '') or 'un file'}. "
+                        f"L'amministratore deve correggere i permessi della cartella dati.")
             except Exception as e:
                 logger.error(f"[{name}] errore: {e}\n{traceback.format_exc()}")
                 return f"Errore durante l'esecuzione di '{name}': {type(e).__name__}: {e}"
@@ -903,7 +905,20 @@ class BrowserManager:
         if BROWSER_PROXY:
             bypass = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
             opzioni["proxy"] = {"server": BROWSER_PROXY, **({"bypass": bypass} if bypass else {})}
-        self._browser = await self._pw.chromium.launch(**opzioni)
+        try:
+            self._browser = await self._pw.chromium.launch(**opzioni)
+        except Exception as e:
+            with contextlib.suppress(Exception):
+                await self._pw.stop()
+            self._pw = None
+            if "doesn't exist" in str(e) or "does not exist" in str(e):
+                percorso = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+                comando = (f"PLAYWRIGHT_BROWSERS_PATH={percorso} " if percorso else "") + \
+                    f"{Path(sys.executable).parent / 'playwright'} install chromium"
+                logger.error(f"Browser Chromium non installato per questa versione di Playwright. Esegui: {comando}")
+                raise UserError("Il browser del server non e' installato (probabilmente Playwright e' stato "
+                                f"aggiornato). L'amministratore deve eseguire: {comando}")
+            raise
         ctx_opts: dict[str, Any] = dict(
             user_agent=USER_AGENT, viewport={"width": 1366, "height": 900}, locale="it-IT",
             timezone_id=TZ_NAME, accept_downloads=False,
@@ -2319,13 +2334,13 @@ class GestoreProcessi:
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
         self.cartella = DATA_DIR / "jobs"
-        self.cartella.mkdir(exist_ok=True)
 
     async def avvia(self, comando: str, cwd: Path) -> str:
         attivi = [j for j in self.jobs.values() if j["proc"].returncode is None]
         if len(attivi) >= 10:
             raise UserError("Troppi processi in background (max 10): terminane qualcuno.")
         jid = secrets.token_hex(3)
+        self.cartella.mkdir(parents=True, exist_ok=True)
         log = self.cartella / f"{jid}.log"
         fh = open(log, "wb")
         proc = await asyncio.create_subprocess_exec(
@@ -4229,7 +4244,43 @@ class ApiKeyMiddleware:
         await self.app(scope, receive, send)
 
 
+def suggerimento_permessi() -> str:
+    try:
+        import pwd
+        utente = pwd.getpwuid(os.getuid()).pw_name
+    except Exception:
+        utente = str(os.getuid())
+    return f"Esegui come root: chown -R {utente}:{utente} {DATA_DIR}"
+
+
+def controlla_permessi() -> list[str]:
+    """Cartelle o file di DATA_DIR non scrivibili dall'utente del servizio (es. creati da root)."""
+    problemi = []
+    for radice, cartelle, files in os.walk(DATA_DIR):
+        if Path(radice) == WORKSPACE_DIR or WORKSPACE_DIR in Path(radice).parents:
+            cartelle[:] = []  # i file dentro il workspace li gestisce l'agente
+        for nome in [radice] + [os.path.join(radice, f) for f in files]:
+            if not os.access(nome, os.W_OK):
+                problemi.append(nome)
+        if len(problemi) >= 5:
+            break
+    if WORKSPACE_DIR.exists() and not os.access(WORKSPACE_DIR, os.W_OK) and str(WORKSPACE_DIR) not in problemi:
+        problemi.append(str(WORKSPACE_DIR))
+    return problemi
+
+
+def prepara_cartelle() -> None:
+    """Crea le cartelle dati all'avvio del servizio (non all'import: un '--check' eseguito come root
+    creerebbe cartelle di proprieta' di root, non scrivibili dall'utente del servizio)."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    WORKSPACE_DIR.mkdir(parents=True, exist_ok=True)
+
+
 async def avvio() -> None:
+    prepara_cartelle()
+    problemi = controlla_permessi()
+    if problemi:
+        logger.error(f"Permessi insufficienti su: {', '.join(problemi[:5])}. {suggerimento_permessi()}")
     TIMER.avvia()
     if FEATURES["music"]:
         LETTORE.avvia_monitor()

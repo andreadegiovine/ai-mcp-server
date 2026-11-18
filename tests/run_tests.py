@@ -257,6 +257,17 @@ async def main():
             check("decodifica redirect Bing", srv._pulisci_url_risultato("https://www.bing.com/ck/a?!&&p=x&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYWdpbmE&ntb=1") == "https://example.com/pagina")
             check("decodifica redirect Google", srv._pulisci_url_risultato("https://www.google.it/url?q=https://ex.com/p&sa=U") == "https://ex.com/p")
 
+            # browser mancante (es. Playwright aggiornato senza 'playwright install') -> messaggio chiaro
+            percorso_ok = srv.CHROMIUM_PATH
+            srv.CHROMIUM_PATH = "/opt/non-esiste/chrome"
+            try:
+                await srv.BrowserManager().contesto()
+                errore = ""
+            except srv.UserError as e:
+                errore = str(e)
+            srv.CHROMIUM_PATH = percorso_ok
+            check("browser mancante: messaggio con il comando per installarlo", "playwright install chromium" in errore, errore)
+
             # --- workspace / terminale ---
             t = testo(await call("terminale_esegui", comando="echo ciao && pwd && echo $HASS_TOKEN$MCP_API_KEY | wc -c"))
             check("terminale esegue nel workspace, senza segreti in env", "ciao" in t and "workspace" in t and "\n1" in t and "codice uscita: 0" in t, t)
@@ -416,6 +427,15 @@ async def main():
             t = testo(await asyncio.wait_for(s4.call_tool("chiedi_all_utente", {"domanda": "Quale?", "opzioni": "A|B"}), 10))
             check("ENABLE_ELICITATION=false: sempre domanda in chat, anche con client compatibile",
                   "Frase da dire" in t and len(risposte) == n_prima, t)
+
+    # --- '--check' non deve creare cartelle (eseguito da root le renderebbe non scrivibili dal servizio) ---
+    import subprocess as sp
+    vuota = S / "mai-creata"
+    r = sp.run([sys.executable, str(ROOT / "mcp_server.py"), "--check"], env={**os.environ, "DATA_DIR": str(vuota)},
+               capture_output=True, text=True, timeout=60)
+    check("--check non crea la cartella dati", r.returncode == 0 and "Tool registrati" in r.stdout and not vuota.exists(),
+          (r.returncode, r.stdout[-300:], r.stderr[-300:]))
+    check("all'avvio la cartella workspace esiste", (DATA / "workspace").is_dir())
 
     # --- Parsing date/durate (unit test) ---
     from datetime import datetime as D
