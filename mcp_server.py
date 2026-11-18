@@ -22,7 +22,7 @@ Gruppi di strumenti
   * Musica       : riproduzione da YouTube stile Alexa (continua con brani simili),
                    su un media_player di Home Assistant o in locale con mpv
   * Calendario   : Google Calendar (lettura, creazione, modifica, eliminazione eventi)
-  * Invii        : rubrica contatti, email (SMTP) e WhatsApp (OpenWA, WAHA o CallMeBot), sempre con conferma
+  * Invii        : rubrica contatti, email (SMTP) e WhatsApp (gateway OpenWA), sempre con conferma
 
 Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
 ------------------------------------------------------------------------------
@@ -69,11 +69,8 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
   Email (SMTP; per Gmail: smtp.gmail.com, porta 587, "password per le app")
     SMTP_HOST=  SMTP_PORT=587  SMTP_USER=  SMTP_PASSWORD=  SMTP_FROM=  SMTP_NOME=Assistente
 
-  WhatsApp
-    WHATSAPP_BACKEND=                # "openwa" o "waha" (gateway self-hosted) oppure "callmebot" (solo al tuo numero)
+  WhatsApp (gateway self-hosted OpenWA: https://github.com/rmyndharis/OpenWA)
     OPENWA_URL=http://IP:2785  OPENWA_API_KEY=  OPENWA_SESSION_ID=<id della sessione>
-    WAHA_URL=http://IP:3000  WAHA_API_KEY=  WAHA_SESSION=default
-    CALLMEBOT_APIKEY=  CALLMEBOT_PHONE=
     WHATSAPP_PREFISSO=39             # prefisso internazionale aggiunto ai numeri senza "+"
 
   Google Calendar (uno dei due metodi)
@@ -308,16 +305,9 @@ SMTP_NOME = _env("SMTP_NOME", "Assistente")
 SMTP_STARTTLS = _env_bool("SMTP_STARTTLS", True)
 
 # --- WhatsApp ---
-WHATSAPP_BACKEND = _env("WHATSAPP_BACKEND").lower()
 OPENWA_URL = _env("OPENWA_URL").rstrip("/")
 OPENWA_API_KEY = _env("OPENWA_API_KEY")
 OPENWA_SESSION_ID = _env("OPENWA_SESSION_ID")
-WAHA_URL = _env("WAHA_URL").rstrip("/")
-WAHA_API_KEY = _env("WAHA_API_KEY")
-WAHA_SESSION = _env("WAHA_SESSION", "default")
-CALLMEBOT_APIKEY = _env("CALLMEBOT_APIKEY")
-CALLMEBOT_PHONE = _env("CALLMEBOT_PHONE")
-CALLMEBOT_URL = "https://api.callmebot.com/whatsapp.php"
 WHATSAPP_PREFISSO = _env("WHATSAPP_PREFISSO", "39").lstrip("+")
 ALLEGATI_MAX_MB = _env_int("ALLEGATI_MAX_MB", 20)
 
@@ -329,10 +319,7 @@ FEATURES = {
     "calendar": _env_bool("ENABLE_CALENDAR", True)
     and (bool(GOOGLE_SA_FILE and Path(GOOGLE_SA_FILE).is_file()) or Path(GOOGLE_TOKEN_FILE).is_file()),
     "email": _env_bool("ENABLE_EMAIL", True) and bool(SMTP_HOST and SMTP_FROM),
-    "whatsapp": _env_bool("ENABLE_WHATSAPP", True) and (
-        (WHATSAPP_BACKEND == "openwa" and bool(OPENWA_URL and OPENWA_SESSION_ID))
-        or (WHATSAPP_BACKEND == "waha" and bool(WAHA_URL))
-        or (WHATSAPP_BACKEND == "callmebot" and bool(CALLMEBOT_APIKEY and CALLMEBOT_PHONE))),
+    "whatsapp": _env_bool("ENABLE_WHATSAPP", True) and bool(OPENWA_URL and OPENWA_SESSION_ID),
 }
 
 # =============================================================================
@@ -2219,71 +2206,37 @@ async def invia_email(destinatario: str = "io", oggetto: str = "", testo: str = 
 
 
 # --- WhatsApp -----------------------------------------------------------------
-def _gateway_post(url: str, corpo: dict, chiave: str, nome: str, var_chiave: str, sessione: str) -> None:
-    """POST verso un gateway WhatsApp self-hosted (OpenWA o WAHA), con errori comprensibili."""
-    headers = {"X-API-Key": chiave} if chiave else {}
+def _openwa_invia(azione: Literal["send-text", "send-image"], corpo: dict) -> None:
+    """POST verso il gateway OpenWA, con errori comprensibili."""
+    url = f"{OPENWA_URL}/api/sessions/{quote(OPENWA_SESSION_ID, safe='')}/messages/{azione}"
+    headers = {"X-API-Key": OPENWA_API_KEY} if OPENWA_API_KEY else {}
     try:
         r = requests.post(url, json=corpo, headers=headers, timeout=60)
     except requests.exceptions.RequestException as e:
-        raise UserError(f"Gateway WhatsApp ({nome}) non raggiungibile: {type(e).__name__}")
+        raise UserError(f"Gateway WhatsApp (OpenWA) non raggiungibile su {OPENWA_URL}: {type(e).__name__}")
     if r.status_code in (401, 403):
-        raise UserError(f"Chiave del gateway WhatsApp non valida o senza permessi ({var_chiave}).")
+        raise UserError("Chiave del gateway WhatsApp non valida o senza permessi (OPENWA_API_KEY).")
     if r.status_code == 404:
-        raise UserError(f"Il gateway {nome} non trova la sessione '{sessione}': controlla l'ID della sessione.")
+        raise UserError(f"Il gateway OpenWA non trova la sessione '{OPENWA_SESSION_ID}': "
+                        f"OPENWA_SESSION_ID deve essere l'ID della sessione, non il nome.")
     if r.status_code >= 400:
-        raise UserError(f"Il gateway {nome} ha risposto HTTP {r.status_code}: {r.text[:200]} "
-                        f"(la sessione '{sessione}' e' collegata al telefono?)")
-
-
-def _gateway_invia(tipo: Literal["testo", "immagine"], chat: str, testo: str = "",
-                   contenuto: bytes = b"", mime: str = "", nome_file: str = "") -> None:
-    if WHATSAPP_BACKEND == "openwa":
-        base = f"{OPENWA_URL}/api/sessions/{quote(OPENWA_SESSION_ID, safe='')}/messages"
-        if tipo == "testo":
-            corpo = {"chatId": chat, "text": testo}
-        else:
-            corpo = {"chatId": chat, "base64": base64.b64encode(contenuto).decode(), "mimetype": mime,
-                     "filename": nome_file, "caption": ""}
-        url = f"{base}/send-text" if tipo == "testo" else f"{base}/send-image"
-        _gateway_post(url, corpo, OPENWA_API_KEY, "OpenWA", "OPENWA_API_KEY", OPENWA_SESSION_ID)
-        return
-    if tipo == "testo":
-        corpo = {"session": WAHA_SESSION, "chatId": chat, "text": testo}
-    else:
-        corpo = {"session": WAHA_SESSION, "chatId": chat, "caption": "",
-                 "file": {"mimetype": mime, "filename": nome_file, "data": base64.b64encode(contenuto).decode()}}
-    url = f"{WAHA_URL}/api/sendText" if tipo == "testo" else f"{WAHA_URL}/api/sendImage"
-    _gateway_post(url, corpo, WAHA_API_KEY, "WAHA", "WAHA_API_KEY", WAHA_SESSION)
+        raise UserError(f"Il gateway OpenWA ha risposto HTTP {r.status_code}: {r.text[:200]} "
+                        f"(la sessione e' collegata al telefono?)")
 
 
 def _invia_whatsapp_sync(dati: dict) -> None:
     numero, testo, immagini = dati["numero"], dati["testo"], dati["immagini"]
-    if WHATSAPP_BACKEND == "callmebot":
-        if numero != normalizza_telefono(CALLMEBOT_PHONE):
-            raise UserError("Con CallMeBot si possono inviare messaggi solo al proprio numero "
-                            f"({telefono_leggibile(normalizza_telefono(CALLMEBOT_PHONE))}).")
-        locali = [i for i in immagini if not i.startswith(("http://", "https://"))]
-        if locali:
-            raise UserError("CallMeBot non puo' inviare file: solo link a immagini online.")
-        corpo = "\n".join([testo] + immagini).strip()
-        try:
-            r = requests.get(CALLMEBOT_URL, params={"phone": numero, "text": corpo, "apikey": CALLMEBOT_APIKEY},
-                             timeout=30)
-        except requests.exceptions.RequestException as e:
-            raise UserError(f"CallMeBot non raggiungibile: {type(e).__name__}")
-        if r.status_code >= 400 or "error" in r.text.lower() or "invalid" in r.text.lower():
-            raise UserError(f"CallMeBot ha rifiutato il messaggio: {re.sub(r'<[^>]+>', ' ', r.text)[:200].strip()}")
-        return
     chat = numero.lstrip("+") + "@c.us"
     if testo:
-        _gateway_invia("testo", chat, testo=testo)
+        _openwa_invia("send-text", {"chatId": chat, "text": testo})
     residuo = ALLEGATI_MAX_MB * 1024 * 1024
     for sorgente in immagini:
         contenuto, nome, mime = _carica_allegato(sorgente, residuo)
         residuo -= len(contenuto)
         if not mime.startswith("image/"):
             raise UserError(f"'{sorgente}' non e' un'immagine ({mime}).")
-        _gateway_invia("immagine", chat, contenuto=contenuto, mime=mime, nome_file=nome)
+        _openwa_invia("send-image", {"chatId": chat, "base64": base64.b64encode(contenuto).decode(),
+                                     "mimetype": mime, "filename": nome, "caption": ""})
 
 
 @tool(
@@ -2321,7 +2274,7 @@ async def invia_whatsapp(destinatario: str = "io", testo: str = "", immagini: Un
         if attesa is not None:
             return attesa
     await asyncio.to_thread(_invia_whatsapp_sync, dati)
-    registra_invio(f"WHATSAPP a={dati['numero']} immagini={len(dati['immagini'])} backend={WHATSAPP_BACKEND}")
+    registra_invio(f"WHATSAPP a={dati['numero']} immagini={len(dati['immagini'])}")
     return (f"Messaggio WhatsApp inviato al numero {telefono_leggibile(dati['numero'])}"
             + (f" con {len(dati['immagini'])} immagini." if dati["immagini"] else "."))
 

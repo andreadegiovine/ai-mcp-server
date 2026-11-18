@@ -243,13 +243,6 @@ async def fx(req):
 WA = []  # richieste ricevute dal gateway WhatsApp finto
 
 
-async def waha(req):
-    if req.headers.get("x-api-key") != "waha-key":
-        return JSONResponse({"error": "unauthorized"}, 401)
-    WA.append((req.url.path, await req.json()))
-    return JSONResponse({"id": f"msg{len(WA)}"})
-
-
 async def openwa(req):
     if req.headers.get("x-api-key") != "owa-key":
         return JSONResponse({"error": "unauthorized"}, 401)
@@ -259,19 +252,10 @@ async def openwa(req):
     return JSONResponse({"messageId": f"msg{len(WA)}", "timestamp": 1}, 201)
 
 
-async def callmebot(req):
-    WA.append(("callmebot", dict(req.query_params)))
-    if req.query_params.get("apikey") != "cmb":
-        return HTMLResponse("APIKey is invalid", 200)
-    return HTMLResponse("<p>Message queued. You will receive it in a few seconds.</p>")
-
-
 web_app = Starlette(routes=[
     Route("/articolo", articolo), Route("/img/pasta.png", img), Route("/doc.pdf", pdf), Route("/file.bin", big),
     Route("/redirect-locale", redirect_locale), Route("/geo", geo), Route("/forecast", forecast),
     Route("/rss", news), Route("/fx/latest", fx),
-    Route("/api/sendText", waha, methods=["POST"]), Route("/api/sendImage", waha, methods=["POST"]),
-    Route("/callmebot", callmebot),
     Route("/api/sessions/{sid}/messages/send-text", openwa, methods=["POST"]),
     Route("/api/sessions/{sid}/messages/send-image", openwa, methods=["POST"]),
 ])

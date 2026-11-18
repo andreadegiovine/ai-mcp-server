@@ -32,12 +32,14 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
   - Conferma con modulo interattivo quando il client lo supporta; registro degli invii in `data/invii.log`
   - 23 nuovi test con SMTP, WAHA e CallMeBot simulati (**164/164 superati**)
 
-- ✅ **Gateway WhatsApp OpenWA** (open source MIT, self-hosted, gratuito senza funzioni a pagamento) aggiunto come opzione consigliata accanto a WAHA e CallMeBot; endpoint `send-text` / `send-image` per sessione, immagini in base64, errori chiari per sessione o chiave sbagliate (**167/167 superati**)
+- ✅ **Gateway WhatsApp OpenWA** (open source MIT, self-hosted, gratuito senza funzioni a pagamento) aggiunto come opzione consigliata; endpoint `send-text` / `send-image` per sessione, immagini in base64, errori chiari per sessione o chiave sbagliate (**167/167 superati**)
+
+- ✅ **Rimossi i gateway WAHA e CallMeBot**: WhatsApp passa solo da OpenWA; non serve piu' `WHATSAPP_BACKEND`, lo strumento si attiva con `OPENWA_URL` e `OPENWA_SESSION_ID` (**164/164 superati**)
 
 ### Decisioni prese
 - Email via SMTP (universale; con Gmail basta una password per le app) invece delle API Gmail
 - OpenWA preferito a WAHA: licenza MIT, nessuna funzione a pagamento, progetto molto diffuso. Il suo server MCP non viene collegato direttamente a OpenWebUI, per mantenere rubrica e conferma obbligatoria
-- WhatsApp tramite gateway configurabile: WAHA (qualsiasi numero, immagini, ma non ufficiale, con rischio di blocco del numero) oppure CallMeBot (solo al proprio numero, solo testo). Le API ufficiali Meta sono escluse per complessità (account business, modelli di messaggio)
+- WhatsApp solo tramite OpenWA (WAHA e CallMeBot valutati e poi rimossi): qualsiasi numero e immagini, ma non ufficiale, con rischio di blocco del numero. Le API ufficiali Meta sono escluse per complessità (account business, modelli di messaggio)
 - La conferma obbligatoria usa un codice monouso legato al messaggio preparato: il modello non puo' cambiare destinatario o contenuto dopo la conferma
 - L'elicitation funziona solo con server con sessione e risposte in streaming (verificato: con `stateless_http` + `json_response` la richiesta al client non arriva)
 - `ENABLE_ELICITATION` **attiva di default**: se il client non supporta i moduli, le domande tornano testuali da sole. Il cambio di trasporto (sessione + streaming) non è ancora stato provato con OpenWebUI; in caso di problemi `ENABLE_ELICITATION=false` ripristina la modalità originale
@@ -99,7 +101,7 @@ Server MCP v1 con 6 tool: data/ora, ricerca Google con Playwright, lettura pagin
 
 - ⏳ Primo deploy su Proxmox e verifica dal vivo di ricerca, musica e calendario
 - ⏳ Collaudo con OpenWebUI: visualizzazione delle immagini restituite dai tool e scelta dei tool da tenere attivi per il modello in uso
-- ⏳ Provare l'invio reale di email (Gmail) e WhatsApp (OpenWA, WAHA o CallMeBot)
+- ⏳ Provare l'invio reale di email (Gmail) e WhatsApp (OpenWA)
 - ⏳ Verificare con OpenWebUI la modalità con sessione (default) e se mostra i moduli interattivi; in caso di problemi usare `ENABLE_ELICITATION=false`
 - 💡 Sandbox dei comandi del terminale con bubblewrap (visibilità limitata al solo workspace)
 - 💡 Musica tramite Music Assistant, come alternativa a yt-dlp per gli altoparlanti di HA

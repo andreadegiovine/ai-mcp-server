@@ -20,7 +20,7 @@ os.environ.update({
     "TIMER_NOTIFY_SERVICE": "notify.mobile_app_test", "MUSIC_MPV_AO": "null", "MUSIC_START_TIMEOUT": "8",
     "HASS_CONFIRM_ENTITIES": "switch.caldaia", "HASS_BLOCKED_ENTITIES": "camera.*",
     "SMTP_HOST": "smtp.test", "SMTP_USER": "bot@test.it", "SMTP_PASSWORD": "pw",
-    "WHATSAPP_BACKEND": "waha", "WAHA_URL": "http://127.0.0.1:18080", "WAHA_API_KEY": "waha-key",
+    "OPENWA_URL": "http://127.0.0.1:18080", "OPENWA_API_KEY": "owa-key", "OPENWA_SESSION_ID": "3f6c1a2e-sessione",
 })
 os.environ.pop("HTTPS_PROXY", None); os.environ.pop("https_proxy", None)
 sys.path.insert(0, str(Path(__file__).parent))
@@ -203,21 +203,14 @@ async def main():
                   "Mando il messaggio con un'immagine al numero 3403434334?" in t and cod and not mocks.WA, t)
             t = testo(await call("invia_whatsapp", codice_conferma=cod))
             import base64 as b64
-            check("whatsapp (WAHA): testo + immagine inviati", "inviato al numero 3403434334" in t and len(mocks.WA) == 2
-                  and mocks.WA[0][1]["chatId"] == "393403434334@c.us" and mocks.WA[0][1]["text"] == "Ecco le immagini"
-                  and mocks.WA[1][0] == "/api/sendImage" and b64.b64decode(mocks.WA[1][1]["file"]["data"])[:4] == b"\x89PNG", (t, mocks.WA[:1]))
+            check("whatsapp (OpenWA): testo + immagine base64 sui percorsi della sessione",
+                  "inviato al numero 3403434334" in t and len(mocks.WA) == 2
+                  and mocks.WA[0][0] == "/api/sessions/3f6c1a2e-sessione/messages/send-text"
+                  and mocks.WA[0][1] == {"chatId": "393403434334@c.us", "text": "Ecco le immagini"}
+                  and mocks.WA[1][0].endswith("/messages/send-image") and mocks.WA[1][1]["mimetype"] == "image/png"
+                  and b64.b64decode(mocks.WA[1][1]["base64"])[:4] == b"\x89PNG", (t, [x[0] for x in mocks.WA]))
             t = testo(await call("invia_whatsapp", destinatario="+44 7700 900123", testo="ciao"))
             check("whatsapp: numero estero", "al numero +447700900123?" in t, t)
-            srv.WHATSAPP_BACKEND, srv.OPENWA_URL, srv.OPENWA_API_KEY, srv.OPENWA_SESSION_ID = "openwa", W, "owa-key", "3f6c1a2e-sessione"
-            n_wa = len(mocks.WA)
-            t = testo(await call("invia_whatsapp", destinatario="io", testo="Da OpenWA", immagini=[W + "/img/pasta.png"]))
-            t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
-            nuovi = mocks.WA[n_wa:]
-            check("whatsapp (OpenWA): testo + immagine base64 sui percorsi della sessione",
-                  "inviato" in t and len(nuovi) == 2
-                  and nuovi[0][0] == "/api/sessions/3f6c1a2e-sessione/messages/send-text" and nuovi[0][1] == {"chatId": "393403434334@c.us", "text": "Da OpenWA"}
-                  and nuovi[1][0].endswith("/messages/send-image") and nuovi[1][1]["mimetype"] == "image/png"
-                  and b64.b64decode(nuovi[1][1]["base64"])[:4] == b"\x89PNG", (t, [x[0] for x in nuovi]))
             srv.OPENWA_SESSION_ID = "sbagliata"
             t = testo(await call("invia_whatsapp", destinatario="io", testo="x"))
             t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
@@ -226,16 +219,8 @@ async def main():
             t = testo(await call("invia_whatsapp", destinatario="io", testo="x"))
             t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
             check("whatsapp (OpenWA): chiave errata -> messaggio chiaro", "OPENWA_API_KEY" in t, t)
-            srv.WHATSAPP_BACKEND, srv.CALLMEBOT_PHONE, srv.CALLMEBOT_APIKEY, srv.CALLMEBOT_URL = "callmebot", "3403434334", "cmb", W + "/callmebot"
-            t = testo(await call("invia_whatsapp", destinatario="3471112223", testo="ciao"))
-            t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
-            check("whatsapp (CallMeBot): solo al proprio numero", "solo al proprio numero" in t, t)
-            t = testo(await call("invia_whatsapp", destinatario="io", testo="Immagini", immagini=W + "/img/pasta.png"))
-            t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
-            q = mocks.WA[-1][1]
-            check("whatsapp (CallMeBot): testo con link all'immagine", "inviato" in t and q["phone"] == "+393403434334" and "/img/pasta.png" in q["text"], (t, q))
-            srv.WHATSAPP_BACKEND = "waha"
-            check("invii registrati nel log", (DATA / "invii.log").read_text().count("\n") == 4, (DATA / "invii.log").read_text())
+            srv.OPENWA_API_KEY = "owa-key"
+            check("invii registrati nel log", (DATA / "invii.log").read_text().count("\n") == 2, (DATA / "invii.log").read_text())
 
             # --- web ---
             t = testo(await call("leggi_pagina_web", url=W + "/articolo"))
