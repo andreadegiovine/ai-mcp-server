@@ -417,7 +417,8 @@ Se il client supporta i moduli interattivi (vedi [Domande all'utente](#domande-a
 
 ### Configurare l'email (Gmail)
 1. Attiva la verifica in due passaggi sull'account Google.
-2. Crea una **password per le app** (Account Google → Sicurezza → Password per le app).
+2. Crea una **password per le app** aprendo direttamente [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords): la voce non compare più nel menu Sicurezza. Scegli un nome (es. "Server MCP") e copia il codice di 16 caratteri senza spazi.
+   La pagina non è disponibile se la verifica in due passaggi non è attiva o è ancora in sospeso, se usi solo chiavi di sicurezza, con la Protezione avanzata o con un account di lavoro/scuola dove l'amministratore l'ha disattivata.
 3. Nel `.env`:
    ```
    SMTP_HOST=smtp.gmail.com
