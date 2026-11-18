@@ -6,6 +6,20 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-18 · Titoli dei tool adatti alla voce
+
+### Attività svolte
+- ✅ Titoli dei tool resi leggibili da un sintetizzatore vocale: tolti parentesi, due punti e prefissi tecnici (OpenWebUI li mostra in chat come `Uso "<titolo>"...`). Esempi:
+  - `Terminale (bash)` → `Terminale`
+  - `Home Assistant: cerca entità` → `Cerca dispositivi della casa`
+  - `Google Calendar: crea evento` → `Crea evento nel calendario`
+- ✅ Nuovo test che controlla che ogni titolo contenga solo lettere e spazi (**124/124 superati**)
+
+### Decisioni prese
+- I titoli sono frasi naturali in italiano, pensate per l'integrazione futura con un servizio vocale; i nomi tecnici dei tool (`hass_cerca_entita`, ...) non cambiano, quindi le configurazioni esistenti restano valide
+
+---
+
 ## 2026-11-17 · v2.0: riscrittura completa del server
 
 ### Punto di partenza
@@ -64,3 +78,4 @@ Server MCP v1 con 6 tool: data/ora, ricerca Google con Playwright, lettura pagin
 - 💡 Musica tramite Music Assistant, come alternativa a yt-dlp per gli altoparlanti di HA
 - 💡 Pausa automatica della musica (o volume abbassato) quando scatta un timer
 - 💡 Esecuzione dei test in GitHub Actions
+- 💡 Integrazione con un servizio vocale: valutare se togliere emoji e simboli (✅, ⚠️, 🎵, •) anche dai testi restituiti dai tool

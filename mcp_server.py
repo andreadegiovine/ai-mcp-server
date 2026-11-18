@@ -698,7 +698,7 @@ def immagine_a_contenuto(dati: bytes, max_lato: int = 768) -> ImageContent:
 # =============================================================================
 @tool(
     "data_ora_corrente",
-    title="Data e ora corrente",
+    title="Data e ora",
     description=(
         "Restituisce data, ora, giorno della settimana e numero di settimana correnti. "
         "Usalo quando l'utente chiede che ore sono, che giorno e' oggi o per qualsiasi calcolo che "
@@ -1263,7 +1263,7 @@ async def leggi_pagina_web(url: str, parte: int = 1) -> str:
 
 @tool(
     "screenshot_pagina",
-    title="Screenshot pagina web",
+    title="Screenshot della pagina",
     description=(
         "Apre un URL e restituisce uno screenshot (immagine) della pagina, utile per vedere layout, grafici, "
         "mappe o contenuti visivi che il testo non descrive. Lo screenshot viene anche salvato nel workspace."
@@ -1430,7 +1430,7 @@ async def vedi_immagine(sorgente: str) -> list:
 
 @tool(
     "scarica_file",
-    title="Scarica file nel workspace",
+    title="Scarica file",
     description=(
         "Scarica un file da un URL http/https e lo salva nel workspace (es. dataset, archivi, PDF). "
         "Restituisce percorso e dimensione. Per i repository git usa invece terminale_esegui con 'git clone'."
@@ -1779,7 +1779,7 @@ async def esegui_comando(comando: str, cwd: Path, timeout: int) -> tuple[int, st
 
 @tool(
     "terminale_esegui",
-    title="Terminale (bash)",
+    title="Terminale",
     description=(
         "Esegue un comando bash nel workspace dedicato (es. git clone, ls, pip install, python script.py, "
         "grep, curl, compilazioni, test). Ogni chiamata parte da 'cartella' (relativa al workspace): "
@@ -2259,7 +2259,7 @@ def cerca_entita(stati: list[dict], aree: dict[str, str], testo: str = "", domin
 
 @tool(
     "hass_cerca_entita",
-    title="Home Assistant: cerca entità",
+    title="Cerca dispositivi della casa",
     description=(
         "Cerca entita' di Home Assistant per nome, stanza/area, tipo o dominio e ne mostra lo stato attuale. "
         "Capisce termini italiani (luce, tapparella, termostato, temperatura, batteria, consumo...). "
@@ -2284,7 +2284,7 @@ async def hass_cerca_entita(testo: str = "", dominio: str = "", area: str = "", 
 
 @tool(
     "hass_stato",
-    title="Home Assistant: stato entità",
+    title="Stato dei dispositivi",
     description=(
         "Legge lo stato attuale (in tempo reale) e tutti gli attributi di una o piu' entita' di Home Assistant. "
         "entity_id: uno o piu' ID separati da virgola (es. 'sensor.temperatura_soggiorno,light.cucina')."
@@ -2309,7 +2309,7 @@ async def hass_stato(entity_id: str) -> str:
 
 @tool(
     "hass_panoramica",
-    title="Home Assistant: panoramica casa",
+    title="Panoramica della casa",
     description=(
         "Riepilogo della casa: numero di entita' per dominio, elenco aree, e cosa e' attivo ora "
         "(luci accese, dispositivi in funzione, porte/finestre aperte, clima, media in riproduzione, avvisi)."
@@ -2356,7 +2356,7 @@ async def hass_panoramica() -> str:
 
 @tool(
     "hass_storico",
-    title="Home Assistant: storico",
+    title="Storico dei dispositivi",
     description=(
         "Storico di un'entita' nelle ultime N ore (max 168): per sensori numerici min/max/media e andamento, "
         "per gli altri l'elenco dei cambi di stato. Es: 'quanto ha consumato oggi', 'quando si e' aperta la porta'."
@@ -2401,7 +2401,7 @@ async def hass_storico(entity_id: str, ore: float = 24) -> str:
 
 @tool(
     "hass_servizi",
-    title="Home Assistant: servizi disponibili",
+    title="Azioni disponibili della casa",
     description="Elenca i servizi (azioni) disponibili per un dominio di Home Assistant con i relativi parametri, es. dominio='climate' o 'media_player'.",
     group="hass",
     read_only=True,
@@ -2455,7 +2455,7 @@ def _richiede_conferma(entita: dict) -> bool:
 
 @tool(
     "hass_esegui_servizio",
-    title="Home Assistant: controlla dispositivi",
+    title="Controllo dei dispositivi",
     description=(
         "Esegue un servizio (azione) di Home Assistant su una o piu' entita'. Esempi:\n"
         "- accendere luce al 50%: dominio='light' servizio='turn_on' entity_id='light.cucina' dati={\"brightness_pct\":50}\n"
@@ -3427,7 +3427,7 @@ def _formatta_evento(ev: dict, cal: str) -> str:
 
 @tool(
     "calendario_eventi",
-    title="Google Calendar: eventi",
+    title="Eventi del calendario",
     description=(
         "Elenca gli eventi del Google Calendar in un intervallo. Senza date mostra i prossimi 'giorni' (default 7). "
         "'da'/'a' accettano 'oggi', 'domani', '18/11/2026', '2026-11-18 15:00'. 'cerca' filtra per testo."
@@ -3490,7 +3490,7 @@ def _corpo_tempi(inizio: str, fine: str, durata_minuti: int, tutto_il_giorno: bo
 
 @tool(
     "calendario_crea_evento",
-    title="Google Calendar: crea evento",
+    title="Crea evento nel calendario",
     description=(
         "Crea un evento nel Google Calendar. 'inizio' es. '2026-11-20 15:00' o 'domani 9:30'; 'fine' opzionale "
         "(altrimenti usa durata_minuti, default 60). Se l'inizio non ha ora o tutto_il_giorno=true crea un evento "
@@ -3519,7 +3519,7 @@ async def calendario_crea_evento(titolo: str, inizio: str, fine: str = "", durat
 
 @tool(
     "calendario_modifica_evento",
-    title="Google Calendar: modifica evento",
+    title="Modifica evento del calendario",
     description=(
         "Modifica un evento esistente (ottieni l'id con calendario_eventi). Specifica solo i campi da cambiare. "
         "Se cambi solo 'inizio' la durata originale viene mantenuta."
@@ -3558,7 +3558,7 @@ async def calendario_modifica_evento(event_id: str, titolo: str = "", inizio: st
 
 @tool(
     "calendario_elimina_evento",
-    title="Google Calendar: elimina evento",
+    title="Elimina evento dal calendario",
     description="Elimina un evento dal Google Calendar. Chiedi conferma all'utente e poi richiama con conferma=true.",
     group="calendar",
     destructive=True,
@@ -3575,7 +3575,7 @@ async def calendario_elimina_evento(event_id: str, conferma: bool = False, calen
 
 @tool(
     "calendario_lista",
-    title="Google Calendar: calendari",
+    title="Elenco dei calendari",
     description="Elenca i calendari Google accessibili con il loro ID (da usare nel parametro 'calendario').",
     group="calendar",
     read_only=True,

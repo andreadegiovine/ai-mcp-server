@@ -88,6 +88,9 @@ async def main():
             await s.initialize()
             tools = {t.name: t for t in (await s.list_tools()).tools}
             check("list_tools", len(tools) >= 30, list(tools))
+            import re as _re
+            titoli_sporchi = [t.title for t in tools.values() if not _re.fullmatch(r"[A-Za-zÀ-ÿ ]+", t.title or "")]
+            check("titoli dei tool leggibili a voce (solo lettere e spazi)", not titoli_sporchi, titoli_sporchi)
             print("   tool:", len(tools))
             call = lambda n, **a: s.call_tool(n, a)
 
