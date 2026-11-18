@@ -67,7 +67,9 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
     MUSIC_DEFAULT_VOLUME=60
 
   Email (SMTP; per Gmail: smtp.gmail.com, porta 587, "password per le app")
-    SMTP_HOST=  SMTP_PORT=587  SMTP_USER=  SMTP_PASSWORD=  SMTP_FROM=  SMTP_NOME=Assistente
+    SMTP_HOST=  SMTP_PORT=587  SMTP_USER=  SMTP_PASSWORD=
+    SMTP_NOME=Assistente             # nome del mittente
+    SMTP_FROM=                       # email del mittente (default: SMTP_USER)
 
   WhatsApp (gateway self-hosted OpenWA: https://github.com/rmyndharis/OpenWA)
     OPENWA_URL=http://IP:2785  OPENWA_API_KEY=  OPENWA_SESSION_ID=<id della sessione>

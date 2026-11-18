@@ -316,7 +316,8 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `SMTP_HOST` | – | Server SMTP (Gmail: `smtp.gmail.com`). Senza, lo strumento email è nascosto |
 | `SMTP_PORT` | `587` | `587` con STARTTLS, `465` con SSL |
 | `SMTP_USER` / `SMTP_PASSWORD` | – | Credenziali (Gmail: indirizzo e *password per le app*) |
-| `SMTP_FROM` / `SMTP_NOME` | `SMTP_USER` / `Assistente` | Mittente e nome visualizzato |
+| `SMTP_NOME` | `Assistente` | Nome del mittente mostrato a chi riceve (es. `Assistente di casa`) |
+| `SMTP_FROM` | `SMTP_USER` | Indirizzo email del mittente. Con Gmail deve essere l'account stesso o un alias verificato (vedi [Configurare l'email](#configurare-lemail-gmail)) |
 | `SMTP_STARTTLS` | `true` | STARTTLS sulla porta 587 |
 | `ALLEGATI_MAX_MB` | `20` | Dimensione massima totale degli allegati (vale anche per le immagini WhatsApp) |
 
@@ -427,6 +428,12 @@ Se il client supporta i moduli interattivi (vedi [Domande all'utente](#domande-a
    SMTP_PASSWORD=la-password-per-le-app
    ```
    Con altri provider usa i loro dati SMTP.
+4. Facoltativo, il mittente:
+   ```
+   SMTP_NOME=Assistente di casa
+   SMTP_FROM=tuoindirizzo@gmail.com
+   ```
+   `SMTP_NOME` è il nome che vede chi riceve la mail. Se usi un indirizzo diverso da `SMTP_USER` in `SMTP_FROM`, Gmail lo accetta solo se è un alias verificato (Gmail → Impostazioni → Account → "Invia messaggio come"); altrimenti lo sostituisce con l'indirizzo dell'account.
 
 ### Configurare WhatsApp
 WhatsApp non offre un'API ufficiale semplice per uso personale. Il server usa **OpenWA**, un gateway self-hosted open source (licenza MIT, gratuito, senza funzioni a pagamento) che invia testo e immagini a qualsiasi numero.
