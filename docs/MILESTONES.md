@@ -22,6 +22,9 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
   - Filtrato dal log un errore innocuo che la libreria MCP registra alla chiusura delle sessioni
   - 15 nuovi test, tra cui un client MCP che compila il modulo e un server con `ENABLE_ELICITATION=false`; tutta la suite gira ora in modalità con sessione (**139/139 superati**)
 
+- ✅ Primo collaudo con OpenWebUI: la modalità con sessione funziona; OpenWebUI non mostra i moduli interattivi, quindi le domande passano da sole alla chat
+- ✅ Domande in chat più adatte ai modelli locali: il server prepara la frase già pronta da dire (es. "Scegli un numero da 1 a 5: 1, 2, 3, 4 oppure 5?"), istruzioni più brevi, niente elenco ridondante "1. 1"; regola "rispondi sempre in italiano" anche nelle istruzioni del server (il modello aveva inserito parole in cinese); log che indica quando la domanda passa in chat (**141/141 superati**)
+
 ### Decisioni prese
 - L'elicitation funziona solo con server con sessione e risposte in streaming (verificato: con `stateless_http` + `json_response` la richiesta al client non arriva)
 - `ENABLE_ELICITATION` **attiva di default**: se il client non supporta i moduli, le domande tornano testuali da sole. Il cambio di trasporto (sessione + streaming) non è ancora stato provato con OpenWebUI; in caso di problemi `ENABLE_ELICITATION=false` ripristina la modalità originale

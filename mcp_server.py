@@ -325,7 +325,8 @@ ISTRUZIONI = """Sei un assistente con accesso a strumenti reali.
 - Per Home Assistant: trova prima l'entity_id con hass_cerca_entita, poi leggi o controlla.
   Per serrature, allarmi, garage o cancelli chiedi SEMPRE conferma esplicita all'utente prima di usare conferma=true.
 - Il workspace (terminale e file) e' una cartella dedicata: lavora li' dentro.
-- Salva nella memoria le preferenze stabili dell'utente quando le comunica."""
+- Salva nella memoria le preferenze stabili dell'utente quando le comunica.
+- Rispondi sempre in italiano, senza inserire parole di altre lingue."""
 
 mcp = FastMCP(
     name="mcp-server",
@@ -1661,20 +1662,38 @@ def _modulo_domanda(opzioni: list[str], libera: bool, multipla: bool):
     return create_model("Risposta", **campi)
 
 
+def _frase_domanda(domanda: str, opzioni: list[str], libera: bool, multipla: bool) -> str:
+    """Frase pronta da dire all'utente: naturale, senza elenchi ne' simboli (adatta alla voce)."""
+    d = domanda.strip().rstrip(":;,. ").strip()
+    if not opzioni:
+        return d if d.endswith("?") else d + "?"
+    d = d.rstrip("?").strip()
+    if len(opzioni) == 1:
+        elenco = opzioni[0]
+    else:
+        elenco = ", ".join(opzioni[:-1]) + (" e " if multipla else " oppure ") + opzioni[-1]
+    frase = f"{d}: {elenco}?"
+    if multipla:
+        frase += " Puoi sceglierne anche più di una."
+    if libera:
+        frase += " Oppure dimmi tu cosa preferisci."
+    return frase
+
+
 def _testo_domanda(domanda: str, opzioni: list[str], libera: bool, multipla: bool) -> str:
-    righe = ["DOMANDA DA PORRE ALL'UTENTE (devi attendere la sua risposta prima di proseguire):", domanda]
+    righe = [
+        "Fai questa domanda all'utente e poi fermati ad aspettare la sua risposta.",
+        "Frase da dire, in italiano (usala così com'è):",
+        _frase_domanda(domanda, opzioni, libera, multipla),
+    ]
     if opzioni:
-        righe.append("Opzioni:")
-        righe.extend(f"{i}. {o}" for i, o in enumerate(opzioni, 1))
-        if multipla:
-            righe.append("L'utente puo' sceglierne piu' di una.")
-        righe.append("L'utente puo' anche rispondere liberamente." if libera
-                     else "L'utente deve scegliere tra queste opzioni.")
+        tipo = "una o più" if multipla else "una"
+        vincolo = "oppure una risposta libera" if libera else "solo tra queste"
+        righe.append(f"Risposte valide ({tipo}, {vincolo}): " + " | ".join(opzioni))
     righe.append(
-        "\nIstruzioni: fai ora questa domanda all'utente con parole naturali, presentando le opzioni in una "
-        "frase scorrevole e senza simboli, cosi' che funzioni anche letta ad alta voce. Poi termina il messaggio: "
-        "non chiamare altri strumenti e non rispondere al posto dell'utente. Quando l'utente risponde, "
-        "accetta anche riferimenti come 'la seconda', 'l'ultima' o parafrasi delle opzioni."
+        "Regole: scrivi solo in italiano, senza parole di altre lingue; niente elenchi né simboli; "
+        "non chiamare altri strumenti e non rispondere al posto dell'utente. "
+        "Quando risponde, accetta anche frasi come 'la seconda', 'l'ultima' o parafrasi."
     )
     return "\n".join(righe)
 
@@ -1734,6 +1753,8 @@ async def chiedi_all_utente(domanda: str, opzioni: Union[list[str], str, None] =
             return f"Risposta dell'utente alla domanda '{domanda}': " + ("; ".join(parti) or "nessun valore")
 
     # Modalita' conversazionale: funziona con qualsiasi client e con la voce
+    logger.info("[chiedi_all_utente] " + ("client senza supporto ai moduli interattivi: domanda in chat"
+                                          if ENABLE_ELICITATION else "moduli disattivati: domanda in chat"))
     return _testo_domanda(domanda, voci, libera, scelta_multipla)
 
 

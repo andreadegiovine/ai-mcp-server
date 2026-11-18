@@ -118,11 +118,18 @@ async def main():
             check("chiedi_all_utente: ctx non esposto nello schema", "ctx" not in tools["chiedi_all_utente"].inputSchema["properties"],
                   tools["chiedi_all_utente"].inputSchema)
             t = testo(await call("chiedi_all_utente", domanda="Quale versione vuoi ascoltare?", opzioni="Originale | Live 1985 | Remaster"))
-            check("chiedi_all_utente: opzioni da testo con |", "1. Originale" in t and "3. Remaster" in t and "rispondere liberamente" in t and "attendere" in t, t)
+            check("chiedi_all_utente: opzioni da testo con | e frase pronta",
+                  "Quale versione vuoi ascoltare: Originale, Live 1985 oppure Remaster? Oppure dimmi tu cosa preferisci." in t
+                  and "Originale | Live 1985 | Remaster" in t and "risposta libera" in t and "aspettare" in t, t)
+            t = testo(await call("chiedi_all_utente", domanda="Scegli un numero da 1 a 5:", opzioni=["1", "2", "3", "4", "5"], risposta_libera=False))
+            check("chiedi_all_utente: numeri senza elenco ridondante", "Scegli un numero da 1 a 5: 1, 2, 3, 4 oppure 5?" in t
+                  and "1. 1" not in t and "solo tra queste" in t and "solo in italiano" in t, t)
+            t = testo(await call("chiedi_all_utente", domanda="Quali stanze?", opzioni="Cucina|Bagno", scelta_multipla=True, risposta_libera=False))
+            check("chiedi_all_utente: scelta multipla a voce", "Quali stanze: Cucina e Bagno? Puoi sceglierne anche più di una." in t, t)
             t = testo(await call("chiedi_all_utente", domanda="Accendo tutte le luci?", opzioni=["Sì", "No"], risposta_libera=False))
-            check("chiedi_all_utente: opzioni come lista, solo scelte", "2. No" in t and "deve scegliere" in t, t)
+            check("chiedi_all_utente: opzioni come lista, solo scelte", "Accendo tutte le luci: Sì oppure No?" in t and "solo tra queste" in t, t)
             t = testo(await call("chiedi_all_utente", domanda="Come si chiama il tuo gatto?"))
-            check("chiedi_all_utente: domanda aperta", "Opzioni" not in t and "gatto" in t, t)
+            check("chiedi_all_utente: domanda aperta", "Risposte valide" not in t and "Come si chiama il tuo gatto?" in t, t)
             t = testo(await call("chiedi_all_utente", domanda="  "))
             check("chiedi_all_utente: domanda vuota", "vuota" in t, t)
 
@@ -294,7 +301,7 @@ async def main():
         async with ClientSession(rd, wr) as s3:
             await s3.initialize()
             t = testo(await s3.call_tool("chiedi_all_utente", {"domanda": "Quale versione?", "opzioni": "A|B"}))
-            check("elicitation: client non compatibile -> domanda in chat", "DOMANDA DA PORRE" in t, t)
+            check("elicitation: client non compatibile -> domanda in chat", "Frase da dire" in t, t)
 
     # --- Server con ENABLE_ELICITATION=false (modalita' stateless + JSON, quella originale) ---
     os.environ["ENABLE_ELICITATION"] = "false"
@@ -311,7 +318,7 @@ async def main():
             n_prima = len(risposte)
             t = testo(await asyncio.wait_for(s4.call_tool("chiedi_all_utente", {"domanda": "Quale?", "opzioni": "A|B"}), 10))
             check("ENABLE_ELICITATION=false: sempre domanda in chat, anche con client compatibile",
-                  "DOMANDA DA PORRE" in t and len(risposte) == n_prima, t)
+                  "Frase da dire" in t and len(risposte) == n_prima, t)
 
     # --- Parsing date/durate (unit test) ---
     from datetime import datetime as D
