@@ -85,7 +85,7 @@ Il server espone **41 tool**, divisi in gruppi. Un gruppo non configurato viene 
 
 ## Come funziona
 
-- **Protocollo:** MCP *Streamable HTTP*, con `stateless_http=True` e `json_response=True`, montato sulla **root `/`**, non su `/mcp`. Così si evita il bug di OpenWebUI che toglie lo slash finale dagli URL e produce un redirect 307 seguito da un 404.
+- **Protocollo:** MCP *Streamable HTTP*, montato sulla **root `/`**, non su `/mcp`. Così si evita il bug di OpenWebUI che toglie lo slash finale dagli URL e produce un redirect 307 seguito da un 404. Di default il server usa sessioni e risposte in streaming, necessarie per i moduli interattivi (vedi [Domande all'utente](#domande-allutente)); con `ENABLE_ELICITATION=false` torna alla modalità senza sessione con risposte JSON (`stateless_http` + `json_response`).
 - **Concorrenza:** tutti i tool sono asincroni. Le chiamate bloccanti (HTTP verso le API, yt-dlp, Google API) girano in thread separati, quindi una richiesta lenta non ferma le altre.
 - **Browser:** una sessione Chromium persistente gestita da Playwright. I cookie, ad esempio il consenso di Google, vengono salvati in `data/browser_state.json`. Ogni richiesta apre la propria pagina, fino a `BROWSER_MAX_PAGES` pagine in parallelo, e il browser si riavvia da solo se va in crash.
 - **Gestione degli errori:** ogni tool restituisce un messaggio leggibile dal modello, ad esempio "⚠️ Entità inesistente, usa hass_cerca_entita", invece di un traceback.
@@ -251,7 +251,7 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `TIMEZONE` | `Europe/Rome` | Fuso orario |
 | `DISABLED_TOOLS` | – | Tool da nascondere, separati da virgola |
 | `ENABLE_TERMINAL` / `ENABLE_HASS` / `ENABLE_MUSIC` / `ENABLE_CALENDAR` | `true` | Attivano o disattivano interi gruppi |
-| `ENABLE_ELICITATION` | `false` | Domande all'utente con modulo interattivo; richiede un client compatibile (vedi [Domande all'utente](#domande-allutente)) |
+| `ENABLE_ELICITATION` | `true` | Domande all'utente con modulo interattivo se il client lo supporta, altrimenti testuali; `false` = modalità senza sessione (vedi [Domande all'utente](#domande-allutente)) |
 | `ELICITATION_TIMEOUT` | `300` | Secondi di attesa della risposta nel modulo interattivo |
 
 ### Web
@@ -367,11 +367,11 @@ Parametri:
 
 Lo strumento funziona in due modalità.
 
-**1. Domanda in chat (predefinita, funziona sempre).** Lo strumento restituisce al modello la domanda e le opzioni numerate, con l'istruzione di porla all'utente in modo naturale, senza simboli (quindi adatta anche alla lettura vocale), e di fermarsi ad aspettare. La risposta arriva come messaggio normale dell'utente, che può dire anche "la seconda" o riformulare l'opzione. Funziona con qualsiasi client, compreso un futuro servizio vocale.
+**1. Domanda in chat (funziona sempre).** Lo strumento restituisce al modello la domanda e le opzioni numerate, con l'istruzione di porla all'utente in modo naturale, senza simboli (quindi adatta anche alla lettura vocale), e di fermarsi ad aspettare. La risposta arriva come messaggio normale dell'utente, che può dire anche "la seconda" o riformulare l'opzione. Funziona con qualsiasi client, compreso un futuro servizio vocale.
 
-**2. Modulo interattivo (opzionale).** Con `ENABLE_ELICITATION=true` il server usa l'*elicitation* MCP: se il client la supporta, mostra all'utente un modulo con le opzioni (menu a tendina, scelta multipla, campo libero) e la risposta torna direttamente al modello, nella stessa chiamata. Se il client non la supporta, lo strumento ripiega da solo sulla domanda in chat.
+**2. Modulo interattivo (attivo di default).** Con `ENABLE_ELICITATION=true` il server usa l'*elicitation* MCP: se il client la supporta, mostra all'utente un modulo con le opzioni (menu a tendina, scelta multipla, campo libero) e la risposta torna direttamente al modello, nella stessa chiamata. Se il client non la supporta, lo strumento ripiega da solo sulla domanda in chat.
 
-> Per l'elicitation il server deve inviare una richiesta al client durante l'esecuzione di un tool, cosa possibile solo con sessione e risposte in streaming. Per questo `ENABLE_ELICITATION=true` disattiva le modalità `stateless_http` e `json_response` usate di default per la massima compatibilità con OpenWebUI. Al momento la documentazione di OpenWebUI non conferma il supporto all'elicitation: lascia l'opzione disattivata, a meno che il tuo client non la supporti.
+> Per l'elicitation il server deve inviare una richiesta al client durante l'esecuzione di un tool, cosa possibile solo con sessione e risposte in streaming. Per questo, con `ENABLE_ELICITATION=true`, il server non usa le modalità `stateless_http` e `json_response`. Il ripiego automatico copre la domanda, non il cambio di trasporto: se OpenWebUI ha problemi a collegarsi o a usare gli strumenti, imposta `ENABLE_ELICITATION=false` e riavvia il servizio. Le domande diventano solo testuali e il server torna alla modalità senza sessione, la più conservativa.
 
 ---
 
@@ -440,7 +440,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 135 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 139 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
@@ -472,6 +472,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 |---|---|
 | OpenWebUI: 404 o redirect | Usa l'URL con lo slash finale: `http://IP:8000/` |
 | 401 Unauthorized | La chiave Bearer in OpenWebUI deve coincidere con `MCP_API_KEY` |
+| OpenWebUI non riesce a usare gli strumenti (errori di sessione o di connessione) | Imposta `ENABLE_ELICITATION=false` per tornare alla modalità senza sessione |
 | Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google: controlla con `--check` |
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |

@@ -28,7 +28,7 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
   Generale
     MCP_HOST=0.0.0.0  MCP_PORT=8000
     MCP_API_KEY=                     # consigliato: protegge l'endpoint con "Authorization: Bearer <chiave>"
-    ENABLE_ELICITATION=false         # true = domande all'utente con modulo interattivo (client compatibile)
+    ENABLE_ELICITATION=true          # domande con modulo interattivo se il client lo supporta (false = solo testo)
     DATA_DIR=./data                  # dati persistenti (timer, memoria, workspace, log)
     TIMEZONE=Europe/Rome
     DISABLED_TOOLS=                  # elenco separato da virgole di tool da nascondere
@@ -205,7 +205,7 @@ MCP_HOST = _env("MCP_HOST", "0.0.0.0")
 MCP_PORT = _env_int("MCP_PORT", 8000)
 MCP_API_KEY = _env("MCP_API_KEY")
 # Moduli interattivi MCP ("elicitation"): richiedono un server con sessione e un client compatibile.
-ENABLE_ELICITATION = _env_bool("ENABLE_ELICITATION", False)
+ENABLE_ELICITATION = _env_bool("ENABLE_ELICITATION", True)
 ELICITATION_TIMEOUT = _env_int("ELICITATION_TIMEOUT", 300)
 
 DATA_DIR = Path(_env("DATA_DIR", str(BASE_DIR / "data"))).expanduser().resolve()
@@ -333,9 +333,9 @@ mcp = FastMCP(
     host=MCP_HOST,
     port=MCP_PORT,
     streamable_http_path="/",
-    # Senza elicitation: ogni richiesta e' autonoma e la risposta e' un JSON semplice (massima
-    # compatibilita' con OpenWebUI). Con elicitation servono sessione e risposte in streaming,
-    # perche' il server deve poter inviare una richiesta al client durante l'esecuzione di un tool.
+    # Con elicitation (default) servono sessione e risposte in streaming, perche' il server deve poter
+    # inviare una richiesta al client durante l'esecuzione di un tool. Con ENABLE_ELICITATION=false
+    # ogni richiesta e' autonoma e la risposta e' un JSON semplice (modalita' piu' conservativa).
     stateless_http=not ENABLE_ELICITATION,
     json_response=not ENABLE_ELICITATION,
 )

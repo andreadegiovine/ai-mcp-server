@@ -261,12 +261,9 @@ async def main():
             t = testo(await call("musica_controlla", azione="stop")); check("stop HA", "interrotta" in t, t)
             t = testo(await call("musica_riproduci", richiesta="x", dispositivo="bagno")); check("dispositivo inesistente", "Nessun altoparlante" in t, t)
 
-    # --- Domande con modulo interattivo (elicitation MCP, ENABLE_ELICITATION=true) ---
+    # --- Domande con modulo interattivo (elicitation MCP, attiva di default sul server principale) ---
     from mcp import types as mtypes
-    os.environ["ENABLE_ELICITATION"] = "true"
-    srv_e = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv_e)
-    os.environ.pop("ENABLE_ELICITATION")
-    servers.append(await serve(srv_e.crea_app(), 18001))
+    check("elicitation attiva di default", srv.ENABLE_ELICITATION is True)
     risposte = []
     async def risponde(context, params):
         risposte.append(params)
@@ -278,7 +275,7 @@ async def main():
         if "scelta" in schema:
             return mtypes.ElicitResult(action="accept", content={"scelta": schema["scelta"]["enum"][1]})
         return mtypes.ElicitResult(action="accept", content={"risposta": "Micio"})
-    async with streamablehttp_client("http://127.0.0.1:18001/", headers=hdr) as (rd, wr, _):
+    async with streamablehttp_client("http://127.0.0.1:18000/", headers=hdr) as (rd, wr, _):
         async with ClientSession(rd, wr, elicitation_callback=risponde) as s2:
             await s2.initialize()
             t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Quale versione?", "opzioni": "Originale|Live|Remaster"}))
@@ -292,12 +289,29 @@ async def main():
             check("elicitation: risposta libera", "ha risposto: Micio" in t, t)
             t = testo(await s2.call_tool("chiedi_all_utente", {"domanda": "Rifiuta questa domanda"}))
             check("elicitation: utente rifiuta", "preferito non rispondere" in t, t)
-    # client senza supporto elicitation sullo stesso server -> ripiego conversazionale
-    async with streamablehttp_client("http://127.0.0.1:18001/", headers=hdr) as (rd, wr, _):
+    # client senza supporto elicitation -> ripiego sulla domanda in chat
+    async with streamablehttp_client("http://127.0.0.1:18000/", headers=hdr) as (rd, wr, _):
         async with ClientSession(rd, wr) as s3:
             await s3.initialize()
             t = testo(await s3.call_tool("chiedi_all_utente", {"domanda": "Quale versione?", "opzioni": "A|B"}))
             check("elicitation: client non compatibile -> domanda in chat", "DOMANDA DA PORRE" in t, t)
+
+    # --- Server con ENABLE_ELICITATION=false (modalita' stateless + JSON, quella originale) ---
+    os.environ["ENABLE_ELICITATION"] = "false"
+    srv_off = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv_off)
+    os.environ.pop("ENABLE_ELICITATION")
+    servers.append(await serve(srv_off.crea_app(), 18001))
+    async with streamablehttp_client("http://127.0.0.1:18001/", headers=hdr) as (rd, wr, _):
+        async with ClientSession(rd, wr, elicitation_callback=risponde) as s4:
+            await s4.initialize()
+            n_tool = len((await s4.list_tools()).tools)
+            check("ENABLE_ELICITATION=false: server stateless funzionante", n_tool == len(tools), n_tool)
+            t = testo(await s4.call_tool("calcola", {"espressione": "6*7"}))
+            check("ENABLE_ELICITATION=false: tool normali", t.endswith("= 42"), t)
+            n_prima = len(risposte)
+            t = testo(await asyncio.wait_for(s4.call_tool("chiedi_all_utente", {"domanda": "Quale?", "opzioni": "A|B"}), 10))
+            check("ENABLE_ELICITATION=false: sempre domanda in chat, anche con client compatibile",
+                  "DOMANDA DA PORRE" in t and len(risposte) == n_prima, t)
 
     # --- Parsing date/durate (unit test) ---
     from datetime import datetime as D
