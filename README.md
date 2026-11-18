@@ -323,7 +323,8 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 ### WhatsApp
 | Variabile | Default | Descrizione |
 |---|---|---|
-| `WHATSAPP_BACKEND` | – | `waha` oppure `callmebot`. Senza, lo strumento WhatsApp è nascosto |
+| `WHATSAPP_BACKEND` | – | `openwa`, `waha` oppure `callmebot`. Senza, lo strumento WhatsApp è nascosto |
+| `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_SESSION_ID` | – | Indirizzo, chiave e ID della sessione del gateway OpenWA |
 | `WAHA_URL` / `WAHA_API_KEY` / `WAHA_SESSION` | – / – / `default` | Indirizzo, chiave e sessione del gateway WAHA |
 | `CALLMEBOT_APIKEY` / `CALLMEBOT_PHONE` | – | Chiave ricevuta da CallMeBot e il tuo numero |
 | `WHATSAPP_PREFISSO` | `39` | Prefisso aggiunto ai numeri scritti senza `+` |
@@ -430,22 +431,44 @@ Se il client supporta i moduli interattivi (vedi [Domande all'utente](#domande-a
    Con altri provider usa i loro dati SMTP.
 
 ### Configurare WhatsApp
-WhatsApp non offre un'API ufficiale semplice per uso personale. Il server supporta due gateway:
+WhatsApp non offre un'API ufficiale semplice per uso personale. Il server supporta tre gateway:
 
-| | **WAHA** (consigliato) | **CallMeBot** |
-|---|---|---|
-| Cos'è | Gateway self-hosted in Docker, collegato al tuo WhatsApp come dispositivo associato (QR code) | Servizio online gratuito |
-| Destinatari | Qualsiasi numero | Solo il tuo numero |
-| Immagini | Sì, inviate come foto | No: vengono inviati i link |
-| Rischi | Non ufficiale: WhatsApp può bloccare il numero, soprattutto con molti messaggi. Meglio un numero secondario | Dipende da un servizio esterno |
+| | **OpenWA** (consigliato) | **WAHA** | **CallMeBot** |
+|---|---|---|---|
+| Cos'è | Gateway self-hosted in Docker, open source (MIT), gratuito senza funzioni a pagamento | Gateway self-hosted in Docker | Servizio online gratuito |
+| Destinatari | Qualsiasi numero | Qualsiasi numero | Solo il tuo numero |
+| Immagini | Sì, inviate come foto | Sì (in passato solo nella versione a pagamento) | No: vengono inviati i link |
+| Rischi | Non ufficiale: WhatsApp può limitare o bloccare il numero. Meglio un numero dedicato | Come OpenWA | Dipende da un servizio esterno |
 
-**WAHA:** installalo con Docker su un container o una VM di Proxmox, seguendo la [documentazione ufficiale](https://waha.devlike.pro). Imposta una chiave API, avvia la sessione (`default`) e collega il telefono con il QR code dalla dashboard. Poi nel `.env`:
+**OpenWA** ([repository](https://github.com/rmyndharis/OpenWA)) si collega al tuo WhatsApp come dispositivo associato, tramite QR code. Installalo con Docker su un container LXC o una VM di Proxmox:
+```bash
+git clone https://github.com/rmyndharis/OpenWA.git && cd OpenWA && docker compose up -d
+```
+1. Leggi la chiave API di amministrazione, generata al primo avvio:
+   ```bash
+   docker exec openwa-api cat /app/data/.api-key
+   ```
+2. Apri la dashboard su `http://IP_DEL_GATEWAY:2785`, crea una sessione e collega il telefono con il QR code (WhatsApp → Dispositivi collegati).
+3. Copia l'**ID della sessione** (un codice tipo UUID, non il nome che le hai dato), visibile nella dashboard o con `GET /api/sessions`.
+4. Nel `.env` del server MCP:
+   ```
+   WHATSAPP_BACKEND=openwa
+   OPENWA_URL=http://IP_DEL_GATEWAY:2785
+   OPENWA_API_KEY=la-chiave-di-openwa
+   OPENWA_SESSION_ID=id-della-sessione
+   ```
+
+Consigli:
+- Dalla dashboard di OpenWA puoi creare una chiave con ruolo *operator*, limitata a quella sessione, invece di usare la chiave di amministrazione.
+- OpenWA può usare due motori: `whatsapp-web.js` (predefinito: rischio di blocco più basso, circa 300–500 MB di RAM per sessione) e `Baileys` (leggero, ma con rischio più alto). Per uso personale tieni il predefinito.
+- OpenWA ha anche un proprio server MCP, ma non conviene collegarlo direttamente a OpenWebUI: aggiungerebbe decine di strumenti e salterebbe la rubrica e la conferma obbligatoria di questo server.
+
+**WAHA:** installalo seguendo la [documentazione ufficiale](https://waha.devlike.pro), imposta una chiave API, avvia la sessione (`default`) e collega il telefono. Poi:
 ```
 WHATSAPP_BACKEND=waha
 WAHA_URL=http://IP_DEL_GATEWAY:3000
 WAHA_API_KEY=la-chiave-di-waha
 ```
-Fino a poco tempo fa l'invio di immagini richiedeva la versione a pagamento (Plus); secondo la documentazione attuale tutte le funzioni sono gratuite. Se l'invio delle immagini fallisce, controlla la versione installata.
 
 **CallMeBot:** segui le istruzioni su [callmebot.com](https://www.callmebot.com): aggiungi il loro numero ai contatti e invia il messaggio di attivazione ("I allow callmebot to send me messages"). Riceverai una chiave. Poi:
 ```
@@ -507,7 +530,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
    useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data && chown root:root /opt/mcp-server/.env && chmod 600 /opt/mcp-server/.env
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `EnvironmentFile=` (systemd legge i segreti come root), `ProtectSystem=strict` e `NoNewPrivileges`.
-3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WAHA; blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
+3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA o WAHA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 4. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 5. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
 
@@ -521,11 +544,11 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 164 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, WAHA e CallMeBot), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 167 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, OpenWA, WAHA e CallMeBot), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
-Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero, WAHA e CallMeBot.
+Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero, OpenWA, WAHA e CallMeBot.
 
 ---
 
@@ -560,5 +583,5 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 | Le aree non compaiono nella ricerca HA | Il token deve appartenere a un utente admin (per `/api/template`) |
 | La musica non parte | Aggiorna `yt-dlp`, installa deno; per la riproduzione locale servono `mpv` e un'uscita audio |
 | L'email non parte: "Credenziali SMTP rifiutate" | Con Gmail serve una password per le app, non la password dell'account |
-| WhatsApp: errore dal gateway | Controlla in WAHA che la sessione sia collegata al telefono e che la chiave coincida con `WAHA_API_KEY` |
+| WhatsApp: errore dal gateway | Controlla nella dashboard del gateway che la sessione sia collegata al telefono, che la chiave sia giusta e, con OpenWA, che `OPENWA_SESSION_ID` sia l'ID e non il nome della sessione |
 | Un timer non notifica | Controlla `TIMER_NOTIFY_SERVICE` e il log del servizio (`journalctl -u mcp-server`) |

@@ -250,6 +250,15 @@ async def waha(req):
     return JSONResponse({"id": f"msg{len(WA)}"})
 
 
+async def openwa(req):
+    if req.headers.get("x-api-key") != "owa-key":
+        return JSONResponse({"error": "unauthorized"}, 401)
+    if req.path_params["sid"] != "3f6c1a2e-sessione":
+        return JSONResponse({"error": "session not found"}, 404)
+    WA.append((req.url.path, await req.json()))
+    return JSONResponse({"messageId": f"msg{len(WA)}", "timestamp": 1}, 201)
+
+
 async def callmebot(req):
     WA.append(("callmebot", dict(req.query_params)))
     if req.query_params.get("apikey") != "cmb":
@@ -263,6 +272,8 @@ web_app = Starlette(routes=[
     Route("/rss", news), Route("/fx/latest", fx),
     Route("/api/sendText", waha, methods=["POST"]), Route("/api/sendImage", waha, methods=["POST"]),
     Route("/callmebot", callmebot),
+    Route("/api/sessions/{sid}/messages/send-text", openwa, methods=["POST"]),
+    Route("/api/sessions/{sid}/messages/send-image", openwa, methods=["POST"]),
 ])
 
 

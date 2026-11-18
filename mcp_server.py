@@ -22,7 +22,7 @@ Gruppi di strumenti
   * Musica       : riproduzione da YouTube stile Alexa (continua con brani simili),
                    su un media_player di Home Assistant o in locale con mpv
   * Calendario   : Google Calendar (lettura, creazione, modifica, eliminazione eventi)
-  * Invii        : rubrica contatti, email (SMTP) e WhatsApp (WAHA o CallMeBot), sempre con conferma
+  * Invii        : rubrica contatti, email (SMTP) e WhatsApp (OpenWA, WAHA o CallMeBot), sempre con conferma
 
 Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
 ------------------------------------------------------------------------------
@@ -70,7 +70,8 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
     SMTP_HOST=  SMTP_PORT=587  SMTP_USER=  SMTP_PASSWORD=  SMTP_FROM=  SMTP_NOME=Assistente
 
   WhatsApp
-    WHATSAPP_BACKEND=                # "waha" (gateway self-hosted) oppure "callmebot" (solo al tuo numero)
+    WHATSAPP_BACKEND=                # "openwa" o "waha" (gateway self-hosted) oppure "callmebot" (solo al tuo numero)
+    OPENWA_URL=http://IP:2785  OPENWA_API_KEY=  OPENWA_SESSION_ID=<id della sessione>
     WAHA_URL=http://IP:3000  WAHA_API_KEY=  WAHA_SESSION=default
     CALLMEBOT_APIKEY=  CALLMEBOT_PHONE=
     WHATSAPP_PREFISSO=39             # prefisso internazionale aggiunto ai numeri senza "+"
@@ -308,6 +309,9 @@ SMTP_STARTTLS = _env_bool("SMTP_STARTTLS", True)
 
 # --- WhatsApp ---
 WHATSAPP_BACKEND = _env("WHATSAPP_BACKEND").lower()
+OPENWA_URL = _env("OPENWA_URL").rstrip("/")
+OPENWA_API_KEY = _env("OPENWA_API_KEY")
+OPENWA_SESSION_ID = _env("OPENWA_SESSION_ID")
 WAHA_URL = _env("WAHA_URL").rstrip("/")
 WAHA_API_KEY = _env("WAHA_API_KEY")
 WAHA_SESSION = _env("WAHA_SESSION", "default")
@@ -326,7 +330,8 @@ FEATURES = {
     and (bool(GOOGLE_SA_FILE and Path(GOOGLE_SA_FILE).is_file()) or Path(GOOGLE_TOKEN_FILE).is_file()),
     "email": _env_bool("ENABLE_EMAIL", True) and bool(SMTP_HOST and SMTP_FROM),
     "whatsapp": _env_bool("ENABLE_WHATSAPP", True) and (
-        (WHATSAPP_BACKEND == "waha" and bool(WAHA_URL))
+        (WHATSAPP_BACKEND == "openwa" and bool(OPENWA_URL and OPENWA_SESSION_ID))
+        or (WHATSAPP_BACKEND == "waha" and bool(WAHA_URL))
         or (WHATSAPP_BACKEND == "callmebot" and bool(CALLMEBOT_APIKEY and CALLMEBOT_PHONE))),
 }
 
@@ -2214,17 +2219,41 @@ async def invia_email(destinatario: str = "io", oggetto: str = "", testo: str = 
 
 
 # --- WhatsApp -----------------------------------------------------------------
-def _waha_post(percorso: str, corpo: dict) -> None:
-    headers = {"X-Api-Key": WAHA_API_KEY} if WAHA_API_KEY else {}
+def _gateway_post(url: str, corpo: dict, chiave: str, nome: str, var_chiave: str, sessione: str) -> None:
+    """POST verso un gateway WhatsApp self-hosted (OpenWA o WAHA), con errori comprensibili."""
+    headers = {"X-API-Key": chiave} if chiave else {}
     try:
-        r = requests.post(f"{WAHA_URL}{percorso}", json=corpo, headers=headers, timeout=60)
+        r = requests.post(url, json=corpo, headers=headers, timeout=60)
     except requests.exceptions.RequestException as e:
-        raise UserError(f"Gateway WhatsApp (WAHA) non raggiungibile su {WAHA_URL}: {type(e).__name__}")
-    if r.status_code == 401:
-        raise UserError("Chiave del gateway WhatsApp non valida (WAHA_API_KEY).")
+        raise UserError(f"Gateway WhatsApp ({nome}) non raggiungibile: {type(e).__name__}")
+    if r.status_code in (401, 403):
+        raise UserError(f"Chiave del gateway WhatsApp non valida o senza permessi ({var_chiave}).")
+    if r.status_code == 404:
+        raise UserError(f"Il gateway {nome} non trova la sessione '{sessione}': controlla l'ID della sessione.")
     if r.status_code >= 400:
-        raise UserError(f"Il gateway WhatsApp ha risposto HTTP {r.status_code}: {r.text[:200]} "
-                        f"(la sessione '{WAHA_SESSION}' e' collegata al telefono?)")
+        raise UserError(f"Il gateway {nome} ha risposto HTTP {r.status_code}: {r.text[:200]} "
+                        f"(la sessione '{sessione}' e' collegata al telefono?)")
+
+
+def _gateway_invia(tipo: Literal["testo", "immagine"], chat: str, testo: str = "",
+                   contenuto: bytes = b"", mime: str = "", nome_file: str = "") -> None:
+    if WHATSAPP_BACKEND == "openwa":
+        base = f"{OPENWA_URL}/api/sessions/{quote(OPENWA_SESSION_ID, safe='')}/messages"
+        if tipo == "testo":
+            corpo = {"chatId": chat, "text": testo}
+        else:
+            corpo = {"chatId": chat, "base64": base64.b64encode(contenuto).decode(), "mimetype": mime,
+                     "filename": nome_file, "caption": ""}
+        url = f"{base}/send-text" if tipo == "testo" else f"{base}/send-image"
+        _gateway_post(url, corpo, OPENWA_API_KEY, "OpenWA", "OPENWA_API_KEY", OPENWA_SESSION_ID)
+        return
+    if tipo == "testo":
+        corpo = {"session": WAHA_SESSION, "chatId": chat, "text": testo}
+    else:
+        corpo = {"session": WAHA_SESSION, "chatId": chat, "caption": "",
+                 "file": {"mimetype": mime, "filename": nome_file, "data": base64.b64encode(contenuto).decode()}}
+    url = f"{WAHA_URL}/api/sendText" if tipo == "testo" else f"{WAHA_URL}/api/sendImage"
+    _gateway_post(url, corpo, WAHA_API_KEY, "WAHA", "WAHA_API_KEY", WAHA_SESSION)
 
 
 def _invia_whatsapp_sync(dati: dict) -> None:
@@ -2247,16 +2276,14 @@ def _invia_whatsapp_sync(dati: dict) -> None:
         return
     chat = numero.lstrip("+") + "@c.us"
     if testo:
-        _waha_post("/api/sendText", {"session": WAHA_SESSION, "chatId": chat, "text": testo})
+        _gateway_invia("testo", chat, testo=testo)
     residuo = ALLEGATI_MAX_MB * 1024 * 1024
     for sorgente in immagini:
         contenuto, nome, mime = _carica_allegato(sorgente, residuo)
         residuo -= len(contenuto)
         if not mime.startswith("image/"):
             raise UserError(f"'{sorgente}' non e' un'immagine ({mime}).")
-        _waha_post("/api/sendImage", {"session": WAHA_SESSION, "chatId": chat, "caption": "",
-                                      "file": {"mimetype": mime, "filename": nome,
-                                               "data": base64.b64encode(contenuto).decode()}})
+        _gateway_invia("immagine", chat, contenuto=contenuto, mime=mime, nome_file=nome)
 
 
 @tool(
