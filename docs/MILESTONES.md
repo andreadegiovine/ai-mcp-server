@@ -9,9 +9,9 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 ## 2026-11-19 · Cartelle per conversazione
 
 ### Attività svolte
-- ✅ **Variabili fisse fuori dal repository**: segreti e valori personali in `/etc/mcp-server/mcp-server.env` (permessi 600), caricati da un drop-in di systemd che sopravvive alla copia del nuovo `mcp-server.service`. Il `.env` diventa una copia di `.env.example`, sostituita a ogni aggiornamento; nessuna modifica al codice
+- ✅ **Variabili fisse fuori dal repository**: segreti e valori personali in `/etc/mcp-server/mcp-server.env` (permessi 600), caricati direttamente dal servizio con `EnvironmentFile=-/etc/mcp-server/mcp-server.env` (facoltativo, ha la precedenza sul `.env`); inizialmente tramite un drop-in di systemd, poi reso il modo standard della repo. Il `.env` diventa una copia di `.env.example`, sostituita a ogni aggiornamento; nessuna modifica al codice
 - ✅ `.env.example`: segnaposto di segreti e preferenze commentati (`MCP_API_KEY`, `HASS_TOKEN`, `HASS_URL`, `METEO_DEFAULT_LOCALITA`, `MUSIC_DEFAULT_DEVICE`), perché copiati nel `.env` diventerebbero valori attivi
-- ✅ README: sezione "Variabili fisse" (file, drop-in, verifica) e comando di aggiornamento completo che copia anche `.env.example` e il servizio
+- ✅ README: sezione "Variabili fisse" (file, caricamento, verifica) e comando di aggiornamento completo che copia anche `.env.example` e il servizio
 - ✅ Tutti gli strumenti che usano il workspace accettano `id_conversazione` (facoltativo): lavorano in `data/workspace/<id>/`, creata se non esiste. Riguarda terminale, processi in background, Python, `file_*`, download, screenshot, `vedi_immagine` e allegati locali di email e WhatsApp
 - ✅ Confinamento nella cartella della conversazione, validazione dell'ID, `$WORKSPACE` del terminale puntato sulla cartella, lista dei processi filtrata per conversazione, log alla creazione di ogni cartella (**183/183 superati**)
 - ✅ Provata e poi rimossa, su richiesta, la lettura automatica dell'ID dall'header `X-OpenWebUI-Chat-Id`

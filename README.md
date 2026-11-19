@@ -218,7 +218,7 @@ Il nuovo `.env.example` sostituisce il `.env`: così arrivano anche le variabili
 cp /opt/mcp-server/.env.example /opt/mcp-server/.env
 ```
 
-Copia anche il file del servizio, nel caso sia cambiato. Il drop-in con le variabili fisse è un file separato e resta intatto:
+Copia anche il file del servizio, nel caso sia cambiato. Il file delle variabili fisse è fuori dal repository e resta intatto:
 
 ```bash
 cp /opt/mcp-server/deploy/mcp-server.service /etc/systemd/system/ && systemctl daemon-reload
@@ -359,7 +359,7 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 
 ## Variabili fisse
 
-Le variabili che personalizzi stanno in un file fuori dal repository, caricato da un *drop-in* di systemd. Il drop-in è un file separato da `mcp-server.service`, quindi resta intatto quando copi il nuovo servizio dopo un aggiornamento.
+Le variabili che personalizzi stanno in `/etc/mcp-server/mcp-server.env`, fuori dal repository. Il servizio [`deploy/mcp-server.service`](deploy/mcp-server.service) lo carica già con `EnvironmentFile=-/etc/mcp-server/mcp-server.env` (il `-` lo rende facoltativo): non serve configurare altro in systemd, e gli aggiornamenti non lo toccano.
 
 **1. File con le variabili fisse**
 
@@ -393,13 +393,15 @@ Rendilo leggibile solo da root. systemd lo legge come root prima di avviare il s
 chmod 600 /etc/mcp-server/mcp-server.env
 ```
 
-**2. Drop-in che carica il file**
+**2. Come vengono caricate**
+
+Il servizio carica prima il `.env` del repository e poi il file delle variabili fisse. Per systemd l'ultimo file vince: per le variabili presenti in entrambi, conta quella del file delle variabili fisse.
+
+Se avevi creato il drop-in `/etc/systemd/system/mcp-server.service.d/override.conf` solo per caricare questo file, ora non serve più. Non fa danni (il file viene letto due volte), ma puoi toglierlo:
 
 ```bash
-mkdir -p /etc/systemd/system/mcp-server.service.d && printf '[Service]\nEnvironmentFile=/etc/mcp-server/mcp-server.env\n' > /etc/systemd/system/mcp-server.service.d/override.conf && systemctl daemon-reload
+rm /etc/systemd/system/mcp-server.service.d/override.conf && systemctl daemon-reload
 ```
-
-Il servizio carica già il `.env` del repository. Il drop-in aggiunge il file delle variabili fisse dopo il `.env`, e per systemd l'ultimo file vince: per le variabili presenti in entrambi, conta quella del file delle variabili fisse.
 
 **3. Aggiornamento**
 
@@ -610,7 +612,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
    ```bash
    useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data
    ```
-   Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=` nel drop-in, che systemd legge come root.
+   Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=-/etc/mcp-server/mcp-server.env`, che systemd legge come root.
 3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 4. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 5. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
@@ -658,7 +660,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 | OpenWebUI: 404 o redirect | Usa l'URL con lo slash finale: `http://IP:8000/` |
 | 401 Unauthorized | La chiave Bearer in OpenWebUI deve coincidere con `MCP_API_KEY` |
 | OpenWebUI non riesce a usare gli strumenti (errori di sessione o di connessione) | Imposta `ENABLE_ELICITATION=false` per tornare alla modalità senza sessione |
-| Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google nelle [variabili fisse](#variabili-fisse), oppure manca il drop-in che le carica: controlla la riga `Tool attivi` nel log e la verifica della sezione Variabili fisse |
+| Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google nelle [variabili fisse](#variabili-fisse), oppure il servizio installato non è aggiornato (deve contenere `EnvironmentFile=-/etc/mcp-server/mcp-server.env`): controlla la riga `Tool attivi` nel log e la verifica della sezione Variabili fisse |
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
 | `PermissionError: [Errno 13] Permission denied: '/opt/mcp-server/data/...'` | Alcuni file di `data/` appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /opt/mcp-server/data` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |

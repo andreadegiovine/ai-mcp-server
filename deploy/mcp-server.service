@@ -2,7 +2,7 @@
 # Installazione:
 #   cp deploy/mcp-server.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now mcp-server
-# Vedi README.md, sezioni "Sicurezza" (utente "mcp") e "Variabili fisse" (drop-in con la configurazione).
+# Vedi README.md, sezioni "Sicurezza" (utente "mcp") e "Variabili fisse" (/etc/mcp-server/mcp-server.env).
 
 [Unit]
 Description=Server MCP per OpenWebUI
@@ -13,10 +13,11 @@ Wants=network-online.target
 User=mcp
 WorkingDirectory=/opt/mcp-server
 # Impostazioni generali (copia di .env.example, sostituita a ogni aggiornamento).
-# Le variabili fisse (segreti, indirizzi, preferenze) arrivano dal drop-in
-# /etc/systemd/system/mcp-server.service.d/override.conf, che carica /etc/mcp-server/mcp-server.env
-# dopo questo file: per systemd l'ultimo file vince. Vedi README, "Variabili fisse".
 EnvironmentFile=/opt/mcp-server/.env
+# Variabili fisse (segreti, indirizzi, preferenze), fuori dal repository e leggibili solo da root:
+# systemd le legge come root prima di passare all'utente mcp. Vengono dopo il .env, quindi hanno la
+# precedenza (per systemd l'ultimo file vince). Il "-" rende il file facoltativo.
+EnvironmentFile=-/etc/mcp-server/mcp-server.env
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 Environment=PATH=/opt/mcp-server/venv/bin:/home/mcp/.deno/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/mcp-server/venv/bin/python /opt/mcp-server/mcp_server.py
