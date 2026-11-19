@@ -15,6 +15,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Installazione (Proxmox LXC + venv)](#installazione-proxmox-lxc--venv)
 - [Aggiornamento](#aggiornamento)
 - [Configurazione (.env)](#configurazione-env)
+- [Variabili fisse](#variabili-fisse)
 - [Collegamento a OpenWebUI](#collegamento-a-openwebui)
 - [Home Assistant](#home-assistant)
 - [Musica](#musica)
@@ -148,11 +149,15 @@ PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright 
 su - mcp -c "curl -fsSL https://deno.land/install.sh | sh"
 ```
 
+Impostazioni generali (il `.env` contiene solo valori predefiniti e non va modificato):
+
 ```bash
-cp /opt/mcp-server/.env.example /opt/mcp-server/.env && nano /opt/mcp-server/.env
+cp /opt/mcp-server/.env.example /opt/mcp-server/.env
 ```
 
-Prova manuale. Il comando mostra quali gruppi e tool sono attivi:
+Le tue variabili (token, password, indirizzi, preferenze) vanno nel file delle variabili fisse, fuori dal repository: segui i passi 1 e 2 di [Variabili fisse](#variabili-fisse).
+
+Prova manuale. Il comando mostra quali gruppi e tool sono attivi con le impostazioni del `.env` (non legge le variabili fisse, che carica systemd: per la configurazione completa guarda la riga `Tool attivi` nel log del servizio):
 
 ```bash
 /opt/mcp-server/venv/bin/python /opt/mcp-server/mcp_server.py --check
@@ -168,14 +173,14 @@ cp /opt/mcp-server/deploy/mcp-server.service /etc/systemd/system/ && systemctl d
 journalctl -u mcp-server -f
 ```
 
-> Il file `.env` viene letto **solo all'avvio**: dopo ogni modifica esegui `systemctl restart mcp-server`.
+> La configurazione viene letta **solo all'avvio**: dopo ogni modifica esegui `systemctl restart mcp-server`.
 > Per aggiornare il codice vedi [Aggiornamento](#aggiornamento).
 
 ---
 
 ## Aggiornamento
 
-Comandi da eseguire come root nel container. I file `.env` e `data/` sono esclusi da git, quindi l'aggiornamento non tocca configurazione, memoria, timer e token.
+Comandi da eseguire come root nel container. La cartella `data/` e il file delle [variabili fisse](#variabili-fisse) sono fuori da git, quindi l'aggiornamento non tocca configurazione personale, memoria, timer e token.
 
 **1. Scarica il codice nuovo**
 
@@ -205,15 +210,21 @@ Serve solo se nel passo 2 si è aggiornato Playwright, perché ogni versione usa
 PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install chromium
 ```
 
-**4. Controlla eventuali nuove variabili**
+**4. Aggiorna le impostazioni generali e il servizio**
 
-Le variabili presenti in `.env.example` e assenti dal tuo `.env` usano il valore predefinito. Per vederle:
+Il nuovo `.env.example` sostituisce il `.env`: così arrivano anche le variabili nuove, con il loro valore predefinito. Le tue variabili stanno nel file delle [variabili fisse](#variabili-fisse) e hanno la precedenza, quindi non si perdono.
 
 ```bash
-cd /opt/mcp-server && diff <(grep -oE '^#? ?[A-Z_]+=' .env.example | tr -d '# ' | sort -u) <(grep -oE '^[A-Z_]+=' .env | sort -u) | grep '^<'
+cp /opt/mcp-server/.env.example /opt/mcp-server/.env
 ```
 
-Se il comando non stampa nulla, il tuo `.env` contiene già tutte le variabili dell'esempio.
+Copia anche il file del servizio, nel caso sia cambiato. Il drop-in con le variabili fisse è un file separato e resta intatto:
+
+```bash
+cp /opt/mcp-server/deploy/mcp-server.service /etc/systemd/system/ && systemctl daemon-reload
+```
+
+Se avevi modificato a mano `/etc/systemd/system/mcp-server.service`, sposta prima le tue modifiche in un drop-in (`systemctl edit mcp-server`), altrimenti vengono sovrascritte.
 
 **5. Riavvia il servizio e controlla**
 
@@ -227,11 +238,13 @@ journalctl -u mcp-server -n 30 --no-pager
 
 Nel log, la riga `Tool attivi (...)` elenca i tool caricati.
 
-**Tutto in un solo comando** (passi 1, 2, 3 e 5):
+**Tutto in un solo comando** (passi da 1 a 5):
 
 ```bash
-cd /opt/mcp-server && git pull && venv/bin/pip install -U -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright venv/bin/playwright install chromium && systemctl restart mcp-server && journalctl -u mcp-server -n 30 --no-pager
+cd /opt/mcp-server && git pull && venv/bin/pip install -U -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright venv/bin/playwright install chromium && cp .env.example .env && cp deploy/mcp-server.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart mcp-server && journalctl -u mcp-server -n 30 --no-pager
 ```
+
+> Usa questo comando solo dopo aver configurato le [variabili fisse](#variabili-fisse): altrimenti la copia di `.env.example` cancella le tue impostazioni dal `.env`.
 
 **Tornare alla versione precedente** se qualcosa non va:
 
@@ -249,7 +262,12 @@ Per tornare all'ultima versione dopo un `checkout`: `git checkout main && git pu
 
 ## Configurazione (.env)
 
-Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili già impostate nell'ambiente, ad esempio dal servizio systemd con `EnvironmentFile=`, hanno la precedenza. Un esempio completo è in [`.env.example`](.env.example).
+La configurazione è su due livelli:
+
+1. **Variabili fisse**, in `/etc/mcp-server/mcp-server.env`: segreti, indirizzi e preferenze personali. Le carica systemd e hanno sempre la precedenza. Vedi [Variabili fisse](#variabili-fisse).
+2. **Impostazioni generali**, nel `.env` accanto a `mcp_server.py`: è una copia di [`.env.example`](.env.example) con i valori predefiniti, che viene sostituita a ogni aggiornamento. Non va modificata.
+
+Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal servizio. Le tabelle qui sotto elencano tutte le variabili: per cambiarne una, aggiungila al file delle variabili fisse.
 
 ### Generale
 | Variabile | Default | Descrizione |
@@ -339,6 +357,70 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 
 ---
 
+## Variabili fisse
+
+Le variabili che personalizzi stanno in un file fuori dal repository, caricato da un *drop-in* di systemd. Il drop-in è un file separato da `mcp-server.service`, quindi resta intatto quando copi il nuovo servizio dopo un aggiornamento.
+
+**1. File con le variabili fisse**
+
+```bash
+mkdir -p /etc/mcp-server && chmod 700 /etc/mcp-server
+```
+
+```bash
+nano /etc/mcp-server/mcp-server.env
+```
+
+Mettici **tutte** le variabili che hai personalizzato, non solo i segreti. Il formato è lo stesso del `.env` (una variabile per riga, commenti solo a inizio riga), per esempio:
+
+```
+MCP_API_KEY=una-chiave-lunga-e-casuale
+HASS_URL=http://192.168.178.48:8123
+HASS_TOKEN=il-tuo-long-lived-token
+METEO_DEFAULT_LOCALITA=Priolo Gargallo
+MUSIC_DEFAULT_DEVICE=media_player.soggiorno
+SMTP_HOST=smtp.gmail.com
+SMTP_USER=tuoindirizzo@gmail.com
+SMTP_PASSWORD=passwordperleapp
+SMTP_NOME=Assistente di casa
+```
+
+Se hai già un `.env` personalizzato, puoi partire da quello: `cp /opt/mcp-server/.env /etc/mcp-server/mcp-server.env`, poi togli le righe lasciate al valore predefinito.
+
+Rendilo leggibile solo da root. systemd lo legge come root prima di avviare il servizio con l'utente `mcp`, quindi il server riceve i valori ma l'agente, dal terminale, non può leggere il file:
+
+```bash
+chmod 600 /etc/mcp-server/mcp-server.env
+```
+
+**2. Drop-in che carica il file**
+
+```bash
+mkdir -p /etc/systemd/system/mcp-server.service.d && printf '[Service]\nEnvironmentFile=/etc/mcp-server/mcp-server.env\n' > /etc/systemd/system/mcp-server.service.d/override.conf && systemctl daemon-reload
+```
+
+Il servizio carica già il `.env` del repository. Il drop-in aggiunge il file delle variabili fisse dopo il `.env`, e per systemd l'ultimo file vince: per le variabili presenti in entrambi, conta quella del file delle variabili fisse.
+
+**3. Aggiornamento**
+
+Da qui in poi aggiorna con il comando completo della sezione [Aggiornamento](#aggiornamento), che copia anche il nuovo `.env.example` sopra il `.env`.
+
+**4. Verifica**
+
+Controlla che il processo abbia ricevuto le variabili giuste. Il comando mostra solo variabili non segrete:
+
+```bash
+tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value mcp-server)/environ | grep -E "^(HASS_URL|SMTP_HOST|SMTP_USER|SMTP_NOME|OPENWA_URL|METEO|MUSIC_DEFAULT_DEVICE)="
+```
+
+In alternativa, la riga `Tool attivi (...)` nel log mostra se gli strumenti di Home Assistant, email e WhatsApp sono stati attivati.
+
+Due attenzioni:
+- **Non mettere `PATH` né `PLAYWRIGHT_BROWSERS_PATH` nel file.** Li imposta già il servizio, e una variabile in `EnvironmentFile` avrebbe la precedenza. Lo stesso vale per `DATA_DIR`, a meno che tu non voglia davvero spostare i dati: in quel caso aggiorna anche `ReadWritePaths` nel servizio.
+- **Le variabili nuove delle prossime versioni** arrivano con il loro valore predefinito dal nuovo `.env`. Se vuoi cambiarne una, aggiungila a `/etc/mcp-server/mcp-server.env`, non al `.env`.
+
+---
+
 ## Collegamento a OpenWebUI
 
 1. *Impostazioni → Strumenti / Connessioni → aggiungi un server MCP* (tipo **MCP Streamable HTTP**).
@@ -422,7 +504,7 @@ Se il client supporta i moduli interattivi (vedi [Domande all'utente](#domande-a
 1. Attiva la verifica in due passaggi sull'account Google.
 2. Crea una **password per le app** aprendo direttamente [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords): la voce non compare più nel menu Sicurezza. Scegli un nome (es. "Server MCP") e copia il codice di 16 caratteri senza spazi.
    La pagina non è disponibile se la verifica in due passaggi non è attiva o è ancora in sospeso, se usi solo chiavi di sicurezza, con la Protezione avanzata o con un account di lavoro/scuola dove l'amministratore l'ha disattivata.
-3. Nel `.env`:
+3. Nelle [variabili fisse](#variabili-fisse):
    ```
    SMTP_HOST=smtp.gmail.com
    SMTP_PORT=587
@@ -452,7 +534,7 @@ git clone https://github.com/rmyndharis/OpenWA.git && cd OpenWA && docker compos
    ```
 2. Apri la dashboard su `http://IP_DEL_GATEWAY:2785`, crea una sessione e collega il telefono con il QR code (WhatsApp → Dispositivi collegati).
 3. Copia l'**ID della sessione** (un codice tipo UUID, non il nome che le hai dato), visibile nella dashboard o con `GET /api/sessions`.
-4. Nel `.env` del server MCP:
+4. Nelle [variabili fisse](#variabili-fisse) del server MCP:
    ```
    OPENWA_URL=http://IP_DEL_GATEWAY:2785
    OPENWA_API_KEY=la-chiave-di-openwa
@@ -494,7 +576,7 @@ L'ID lo passa il modello nel parametro `id_conversazione`, e deve usare lo stess
 1. Google Cloud Console → crea un progetto → abilita **Google Calendar API**.
 2. Crea un **service account** e scarica la chiave JSON, ad esempio in `/opt/mcp-server/service_account.json` (`chmod 600`).
 3. In Google Calendar → impostazioni del tuo calendario → *Condividi con persone specifiche* → aggiungi l'email del service account con il permesso **"Apporta modifiche agli eventi"**.
-4. Nel `.env`:
+4. Nelle [variabili fisse](#variabili-fisse):
    ```
    GOOGLE_SERVICE_ACCOUNT_FILE=/opt/mcp-server/service_account.json
    GOOGLE_CALENDAR_IDS=tuoindirizzo@gmail.com
@@ -524,11 +606,11 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 `terminale_esegui` ed `esegui_python` eseguono comandi veri con i permessi del processo del server: il parametro `cartella` decide solo da dove partono. Il vero confine è dato dal sistema operativo. Per questo:
 
 1. **Container LXC unprivileged.** Si controlla sull'host Proxmox con `pct config <ID> | grep unprivileged`.
-2. **Utente dedicato, non root.** Così il `.env` non è leggibile dall'agente e il codice del server non è modificabile:
+2. **Utente dedicato, non root.** Così il codice del server non è modificabile e i segreti, nel file delle [variabili fisse](#variabili-fisse) (`/etc/mcp-server/mcp-server.env`, permessi 600), non sono leggibili dall'agente:
    ```bash
-   useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data && chown root:root /opt/mcp-server/.env && chmod 600 /opt/mcp-server/.env
+   useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data
    ```
-   Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `EnvironmentFile=` (systemd legge i segreti come root), `ProtectSystem=strict` e `NoNewPrivileges`.
+   Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=` nel drop-in, che systemd legge come root.
 3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 4. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 5. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
@@ -576,7 +658,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 | OpenWebUI: 404 o redirect | Usa l'URL con lo slash finale: `http://IP:8000/` |
 | 401 Unauthorized | La chiave Bearer in OpenWebUI deve coincidere con `MCP_API_KEY` |
 | OpenWebUI non riesce a usare gli strumenti (errori di sessione o di connessione) | Imposta `ENABLE_ELICITATION=false` per tornare alla modalità senza sessione |
-| Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google: controlla con `--check` |
+| Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google nelle [variabili fisse](#variabili-fisse), oppure manca il drop-in che le carica: controlla la riga `Tool attivi` nel log e la verifica della sezione Variabili fisse |
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
 | `PermissionError: [Errno 13] Permission denied: '/opt/mcp-server/data/...'` | Alcuni file di `data/` appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /opt/mcp-server/data` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |

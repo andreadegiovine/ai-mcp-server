@@ -2,7 +2,7 @@
 # Installazione:
 #   cp deploy/mcp-server.service /etc/systemd/system/
 #   systemctl daemon-reload && systemctl enable --now mcp-server
-# Vedi README.md, sezione "Sicurezza", per la creazione dell'utente "mcp".
+# Vedi README.md, sezioni "Sicurezza" (utente "mcp") e "Variabili fisse" (drop-in con la configurazione).
 
 [Unit]
 Description=Server MCP per OpenWebUI
@@ -12,8 +12,10 @@ Wants=network-online.target
 [Service]
 User=mcp
 WorkingDirectory=/opt/mcp-server
-# systemd legge il .env come root prima di passare all'utente mcp:
-# il server riceve i segreti ma l'agente (terminale) non puo' leggere il file.
+# Impostazioni generali (copia di .env.example, sostituita a ogni aggiornamento).
+# Le variabili fisse (segreti, indirizzi, preferenze) arrivano dal drop-in
+# /etc/systemd/system/mcp-server.service.d/override.conf, che carica /etc/mcp-server/mcp-server.env
+# dopo questo file: per systemd l'ultimo file vince. Vedi README, "Variabili fisse".
 EnvironmentFile=/opt/mcp-server/.env
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 Environment=PATH=/opt/mcp-server/venv/bin:/home/mcp/.deno/bin:/usr/local/bin:/usr/bin:/bin
