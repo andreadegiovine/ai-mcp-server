@@ -313,6 +313,15 @@ async def main():
             t = testo(await call("file_cerca", regex="appunti", id_conversazione="chat-123")); check("conv: ricerca nei file", "note.txt:1:" in t, t)
             t = testo(await call("file_modifica", percorso="note.txt", testo_vecchio="123", testo_nuovo="centoventitre", id_conversazione="chat-123"))
             check("conv: modifica", "Modificato note.txt" in t, t)
+            t = testo(await call("invia_email", destinatario="io", testo="allegato locale", allegati=["note.txt"], id_conversazione="chat-123"))
+            t = testo(await call("invia_email", codice_conferma=codice(t)))
+            m = [x[1] for x in SMTP_LOG if x[0] == "send"][-1]
+            check("conv: allegato preso dalla cartella della conversazione", "Email inviata" in t
+                  and [a.get_filename() for a in m.iter_attachments()] == ["note.txt"], t)
+            t = testo(await call("scarica_file", url=W + "/file.bin", id_conversazione="chat-123"))
+            check("conv: scarica_file nella cartella della conversazione", (DATA / "workspace" / "chat-123" / "file.bin").exists(), t)
+            r = await call("screenshot_pagina", url=W + "/articolo", id_conversazione="chat-123")
+            check("conv: screenshot nella cartella della conversazione", any((DATA / "workspace" / "chat-123" / "screenshot").glob("*.png")), testo(r))
             t = testo(await call("terminale_esegui", comando="sleep 2", in_background=True, id_conversazione="chat-123"))
             t1 = testo(await call("terminale_processi", azione="lista", id_conversazione="chat-123"))
             t2 = testo(await call("terminale_processi", azione="lista", id_conversazione="chat-nuova"))
@@ -456,34 +465,6 @@ async def main():
             t = testo(await asyncio.wait_for(s4.call_tool("chiedi_all_utente", {"domanda": "Quale?", "opzioni": "A|B"}), 10))
             check("ENABLE_ELICITATION=false: sempre domanda in chat, anche con client compatibile",
                   "Frase da dire" in t and len(risposte) == n_prima, t)
-    async with streamablehttp_client("http://127.0.0.1:18001/", headers={**hdr, "X-OpenWebUI-Chat-Id": "stateless-1"}) as (rd, wr, _):
-        async with ClientSession(rd, wr) as s7:
-            await s7.initialize()
-            t = testo(await s7.call_tool("file_scrivi", {"percorso": "x.txt", "contenuto": "ok"}))
-            check("ENABLE_ELICITATION=false: header ID conversazione letto", (DATA / "workspace" / "stateless-1" / "x.txt").exists(), t)
-
-    # --- ID conversazione dall'header inviato dal client (es. OpenWebUI: X-OpenWebUI-Chat-Id: {{CHAT_ID}}) ---
-    async with streamablehttp_client("http://127.0.0.1:18000/", headers={**hdr, "X-OpenWebUI-Chat-Id": "owui-abc"}) as (rd, wr, _):
-        async with ClientSession(rd, wr) as s5:
-            await s5.initialize()
-            t = testo(await s5.call_tool("file_scrivi", {"percorso": "h.txt", "contenuto": "da header"}))
-            check("header: senza parametro usa la cartella dell'header", (DATA / "workspace" / "owui-abc" / "h.txt").exists(), t)
-            t = testo(await s5.call_tool("file_leggi", {"percorso": "h.txt", "id_conversazione": "altro-id"}))
-            check("header: ha la precedenza sul parametro", "da header" in t and not (DATA / "workspace" / "altro-id").exists(), t)
-            t = testo(await s5.call_tool("scarica_file", {"url": W + "/file.bin"}))
-            check("header: scarica_file nella cartella della conversazione", (DATA / "workspace" / "owui-abc" / "file.bin").exists(), t)
-            r = await s5.call_tool("screenshot_pagina", {"url": W + "/articolo"})
-            check("header: screenshot nella cartella della conversazione", any((DATA / "workspace" / "owui-abc" / "screenshot").glob("*.png")), testo(r))
-            t = testo(await s5.call_tool("invia_email", {"destinatario": "io", "testo": "allegato locale", "allegati": ["h.txt"]}))
-            t = testo(await s5.call_tool("invia_email", {"codice_conferma": codice(t)}))
-            m = [x[1] for x in SMTP_LOG if x[0] == "send"][-1]
-            check("header: allegato preso dalla cartella della conversazione", "Email inviata" in t
-                  and [a.get_filename() for a in m.iter_attachments()] == ["h.txt"], t)
-    async with streamablehttp_client("http://127.0.0.1:18000/", headers={**hdr, "X-OpenWebUI-Chat-Id": "{{CHAT_ID}}"}) as (rd, wr, _):
-        async with ClientSession(rd, wr) as s6:
-            await s6.initialize()
-            t = testo(await s6.call_tool("file_leggi", {"percorso": "prog/app.py"}))
-            check("header non valido ignorato (si usa la radice)", "return 41 + 1" in t, t)
 
     # --- '--check' non deve creare cartelle (eseguito da root le renderebbe non scrivibili dal servizio) ---
     import subprocess as sp

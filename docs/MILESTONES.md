@@ -10,16 +10,11 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ### Attività svolte
 - ✅ Tutti gli strumenti che usano il workspace accettano `id_conversazione` (facoltativo): lavorano in `data/workspace/<id>/`, creata se non esiste. Riguarda terminale, processi in background, Python, `file_*`, download, screenshot, `vedi_immagine` e allegati locali di email e WhatsApp
-- ✅ L'ID viene letto anche dall'header HTTP `X-OpenWebUI-Chat-Id` (configurabile con `CONVERSAZIONE_HEADER`), che ha la precedenza sul parametro
-- ✅ Confinamento nella cartella della conversazione, validazione dell'ID, `$WORKSPACE` del terminale puntato sulla cartella, lista dei processi filtrata per conversazione, log alla creazione di ogni cartella
-- ✅ 20 nuovi test, anche in modalità senza sessione (**187/187 superati**)
+- ✅ Confinamento nella cartella della conversazione, validazione dell'ID, `$WORKSPACE` del terminale puntato sulla cartella, lista dei processi filtrata per conversazione, log alla creazione di ogni cartella (**183/183 superati**)
+- ✅ Provata e poi rimossa, su richiesta, la lettura automatica dell'ID dall'header `X-OpenWebUI-Chat-Id`
 
 ### Decisioni prese
-- L'header è il metodo principale: il modello non conosce l'ID della chat, a meno che il client non glielo fornisca. In OpenWebUI si configura come header della connessione MCP (`X-OpenWebUI-Chat-Id: {{CHAT_ID}}`)
-- Con un ID, gli strumenti non possono uscire dalla cartella della conversazione; senza ID, lavorano nella radice del workspace come prima
-
-### Da verificare
-- ⏳ Che la versione di OpenWebUI in uso sostituisca `{{CHAT_ID}}` negli header della connessione MCP (segnaposto citato da varie fonti, non verificato sulla documentazione ufficiale)
+- L'ID arriva solo dal parametro `id_conversazione`, passato dal modello; senza ID gli strumenti lavorano nella radice del workspace come prima
 
 ---
 

@@ -311,7 +311,6 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `TERMINAL_MAX_OUTPUT` | `12000` | Caratteri massimi di output restituiti |
 | `TERMINAL_MAX_TIMEOUT` | `900` | Timeout massimo di un comando, in secondi |
 | `DOWNLOAD_MAX_MB` | `200` | Dimensione massima di `scarica_file` |
-| `CONVERSAZIONE_HEADER` | `X-OpenWebUI-Chat-Id` | Header HTTP da cui leggere l'ID della conversazione; vuoto = disattivato (vedi [Cartelle per conversazione](#cartelle-per-conversazione)) |
 
 ### Email (SMTP)
 | Variabile | Default | Descrizione |
@@ -475,21 +474,7 @@ Tutti gli strumenti che usano il workspace accettano un ID di conversazione faco
 - Il terminale parte da quella cartella, e la variabile `$WORKSPACE` punta lì.
 - Senza ID, gli strumenti lavorano nella radice del workspace, come prima.
 
-### Da dove arriva l'ID
-1. **Header HTTP inviato dal client (consigliato).** È il metodo affidabile, perché il modello non deve ricordarsi niente. Il server legge l'header `X-OpenWebUI-Chat-Id` (configurabile con `CONVERSAZIONE_HEADER`), che ha la precedenza sul parametro.
-2. **Parametro `id_conversazione`.** Il modello lo passa a ogni chiamata. Funziona solo se il modello conosce l'ID, ad esempio perché il client lo inserisce nel prompt.
-
-### Configurare OpenWebUI
-Nelle impostazioni della connessione al server MCP, aggiungi un header personalizzato:
-```
-X-OpenWebUI-Chat-Id: {{CHAT_ID}}
-```
-OpenWebUI sostituisce `{{CHAT_ID}}` con l'ID della chat corrente. Questo segnaposto è citato da varie fonti, ma non sono riuscito a verificarlo sulla documentazione ufficiale. Per controllare che funzioni, chiedi all'agente di creare un file in una chat, poi guarda il log:
-```bash
-journalctl -u mcp-server -n 50 --no-pager | grep "cartella della conversazione"
-```
-- `Creata la cartella della conversazione '...' (ID dall header X-OpenWebUI-Chat-Id)`: funziona.
-- Nessuna riga, oppure `Header ... ignorato, valore non valido: '{{CHAT_ID}}'`: la tua versione di OpenWebUI non sostituisce il segnaposto, e i file restano nella radice del workspace.
+L'ID lo passa il modello nel parametro `id_conversazione`, e deve usare lo stesso valore per tutta la conversazione.
 
 ---
 
@@ -558,7 +543,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 187 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (parametro, header, confinamento, allegati), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 183 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
