@@ -20,6 +20,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Musica](#musica)
 - [Domande all'utente](#domande-allutente)
 - [Email e WhatsApp](#email-e-whatsapp)
+- [Cartelle per conversazione](#cartelle-per-conversazione)
 - [Timer e sveglie](#timer-e-sveglie)
 - [Google Calendar](#google-calendar)
 - [Sicurezza](#sicurezza)
@@ -104,6 +105,7 @@ Il server espone **46 tool**, divisi in gruppi. Un gruppo non configurato viene 
 ```
 data/
 ├── workspace/            # unica area di lavoro di terminale e tool sui file
+│   └── <id-chat>/        # una sottocartella per conversazione (vedi Cartelle per conversazione)
 ├── memoria.json          # memoria permanente
 ├── timers.json           # timer e sveglie (ripristinati al riavvio)
 ├── hass_audit.log        # registro di tutti i comandi inviati a Home Assistant
@@ -309,6 +311,7 @@ Il server legge il `.env` dalla stessa cartella di `mcp_server.py`. Le variabili
 | `TERMINAL_MAX_OUTPUT` | `12000` | Caratteri massimi di output restituiti |
 | `TERMINAL_MAX_TIMEOUT` | `900` | Timeout massimo di un comando, in secondi |
 | `DOWNLOAD_MAX_MB` | `200` | Dimensione massima di `scarica_file` |
+| `CONVERSAZIONE_HEADER` | `X-OpenWebUI-Chat-Id` | Header HTTP da cui leggere l'ID della conversazione; vuoto = disattivato (vedi [Cartelle per conversazione](#cartelle-per-conversazione)) |
 
 ### Email (SMTP)
 | Variabile | Default | Descrizione |
@@ -464,6 +467,32 @@ Consigli:
 
 ---
 
+## Cartelle per conversazione
+
+Tutti gli strumenti che usano il workspace accettano un ID di conversazione facoltativo. Se c'è, lavorano in `data/workspace/<id>/`, che viene creata se non esiste. Così i file di una chat non si mescolano con quelli delle altre. Gli strumenti interessati sono `terminale_esegui`, `terminale_processi`, `esegui_python`, `file_*`, `scarica_file`, `screenshot_pagina`, `vedi_immagine` e, per gli allegati locali, `invia_email` e `invia_whatsapp`.
+
+- I percorsi relativi partono dalla cartella della conversazione, e non si può uscirne: `../` e i symlink verso l'esterno vengono rifiutati.
+- Il terminale parte da quella cartella, e la variabile `$WORKSPACE` punta lì.
+- Senza ID, gli strumenti lavorano nella radice del workspace, come prima.
+
+### Da dove arriva l'ID
+1. **Header HTTP inviato dal client (consigliato).** È il metodo affidabile, perché il modello non deve ricordarsi niente. Il server legge l'header `X-OpenWebUI-Chat-Id` (configurabile con `CONVERSAZIONE_HEADER`), che ha la precedenza sul parametro.
+2. **Parametro `id_conversazione`.** Il modello lo passa a ogni chiamata. Funziona solo se il modello conosce l'ID, ad esempio perché il client lo inserisce nel prompt.
+
+### Configurare OpenWebUI
+Nelle impostazioni della connessione al server MCP, aggiungi un header personalizzato:
+```
+X-OpenWebUI-Chat-Id: {{CHAT_ID}}
+```
+OpenWebUI sostituisce `{{CHAT_ID}}` con l'ID della chat corrente. Questo segnaposto è citato da varie fonti, ma non sono riuscito a verificarlo sulla documentazione ufficiale. Per controllare che funzioni, chiedi all'agente di creare un file in una chat, poi guarda il log:
+```bash
+journalctl -u mcp-server -n 50 --no-pager | grep "cartella della conversazione"
+```
+- `Creata la cartella della conversazione '...' (ID dall header X-OpenWebUI-Chat-Id)`: funziona.
+- Nessuna riga, oppure `Header ... ignorato, valore non valido: '{{CHAT_ID}}'`: la tua versione di OpenWebUI non sostituisce il segnaposto, e i file restano nella radice del workspace.
+
+---
+
 ## Timer e sveglie
 
 - **Formati:** `timer_imposta(durata="10m")`, `"1h30m"`, `"1 ora e 15 minuti"`, `"mezz'ora"`, `"00:05:00"`; un numero senza unità vale minuti.
@@ -529,7 +558,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 164 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 187 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (parametro, header, confinamento, allegati), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 

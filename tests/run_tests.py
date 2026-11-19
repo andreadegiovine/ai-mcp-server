@@ -289,6 +289,35 @@ async def main():
             os.symlink("/etc", DATA / "workspace" / "link_etc")
             t = testo(await call("file_leggi", percorso="link_etc/passwd")); check("symlink verso esterno bloccato", "fuori dal workspace" in t, t)
 
+            # --- cartella per conversazione (parametro id_conversazione) ---
+            sch = tools["file_scrivi"].inputSchema["properties"]
+            check("id_conversazione nello schema con descrizione, ctx nascosto",
+                  "id_conversazione" in sch and "sottocartella" in str(sch["id_conversazione"]) and "ctx" not in sch, sch)
+            t = testo(await call("file_scrivi", percorso="note.txt", contenuto="appunti chat 123", id_conversazione="chat-123"))
+            check("conv: file creato nella cartella della conversazione", "Creato note.txt" in t
+                  and (DATA / "workspace" / "chat-123" / "note.txt").read_text() == "appunti chat 123", t)
+            t = testo(await call("file_leggi", percorso="note.txt", id_conversazione="chat-123")); check("conv: lettura", "appunti chat 123" in t, t)
+            t = testo(await call("file_leggi", percorso="note.txt")); check("conv: senza id si lavora nella radice", "non trovato" in t, t)
+            t = testo(await call("file_elenca", id_conversazione="chat-123"))
+            check("conv: elenco relativo alla cartella", "Cartella della conversazione chat-123" in t and "note.txt" in t and "prog/" not in t, t)
+            t = testo(await call("file_elenca", id_conversazione="chat-nuova"))
+            check("conv: cartella creata se non esiste", "(vuota)" in t and (DATA / "workspace" / "chat-nuova").is_dir(), t)
+            t = testo(await call("file_leggi", percorso="../prog/app.py", id_conversazione="chat-123"))
+            check("conv: non si esce dalla cartella della conversazione", "fuori dal workspace della conversazione" in t, t)
+            t = testo(await call("file_leggi", percorso="note.txt", id_conversazione="../etc"))
+            check("conv: ID non valido rifiutato", "ID conversazione non valido" in t, t)
+            t = testo(await call("terminale_esegui", comando="pwd && echo $WORKSPACE && ls", id_conversazione="chat-123"))
+            check("conv: terminale parte dalla cartella della conversazione", t.count("/workspace/chat-123") == 2 and "note.txt" in t and "[cartella: ." in t, t)
+            t = testo(await call("esegui_python", codice="open('da_python.txt','w').write('ok'); print('fatto')", id_conversazione="chat-123"))
+            check("conv: python scrive nella cartella della conversazione", "fatto" in t and (DATA / "workspace" / "chat-123" / "da_python.txt").exists(), t)
+            t = testo(await call("file_cerca", regex="appunti", id_conversazione="chat-123")); check("conv: ricerca nei file", "note.txt:1:" in t, t)
+            t = testo(await call("file_modifica", percorso="note.txt", testo_vecchio="123", testo_nuovo="centoventitre", id_conversazione="chat-123"))
+            check("conv: modifica", "Modificato note.txt" in t, t)
+            t = testo(await call("terminale_esegui", comando="sleep 2", in_background=True, id_conversazione="chat-123"))
+            t1 = testo(await call("terminale_processi", azione="lista", id_conversazione="chat-123"))
+            t2 = testo(await call("terminale_processi", azione="lista", id_conversazione="chat-nuova"))
+            check("conv: lista processi filtrata per conversazione", "sleep 2" in t1 and "Nessun processo" in t2, (t1, t2))
+
             # --- Home Assistant ---
             t = testo(await call("hass_cerca_entita", testo="temperatura soggiorno"))
             check("hass cerca: temperatura soggiorno", t.split("\n")[1].startswith("• sensor.temperatura_soggiorno") and "[area: Soggiorno]" in t, t)
@@ -427,6 +456,34 @@ async def main():
             t = testo(await asyncio.wait_for(s4.call_tool("chiedi_all_utente", {"domanda": "Quale?", "opzioni": "A|B"}), 10))
             check("ENABLE_ELICITATION=false: sempre domanda in chat, anche con client compatibile",
                   "Frase da dire" in t and len(risposte) == n_prima, t)
+    async with streamablehttp_client("http://127.0.0.1:18001/", headers={**hdr, "X-OpenWebUI-Chat-Id": "stateless-1"}) as (rd, wr, _):
+        async with ClientSession(rd, wr) as s7:
+            await s7.initialize()
+            t = testo(await s7.call_tool("file_scrivi", {"percorso": "x.txt", "contenuto": "ok"}))
+            check("ENABLE_ELICITATION=false: header ID conversazione letto", (DATA / "workspace" / "stateless-1" / "x.txt").exists(), t)
+
+    # --- ID conversazione dall'header inviato dal client (es. OpenWebUI: X-OpenWebUI-Chat-Id: {{CHAT_ID}}) ---
+    async with streamablehttp_client("http://127.0.0.1:18000/", headers={**hdr, "X-OpenWebUI-Chat-Id": "owui-abc"}) as (rd, wr, _):
+        async with ClientSession(rd, wr) as s5:
+            await s5.initialize()
+            t = testo(await s5.call_tool("file_scrivi", {"percorso": "h.txt", "contenuto": "da header"}))
+            check("header: senza parametro usa la cartella dell'header", (DATA / "workspace" / "owui-abc" / "h.txt").exists(), t)
+            t = testo(await s5.call_tool("file_leggi", {"percorso": "h.txt", "id_conversazione": "altro-id"}))
+            check("header: ha la precedenza sul parametro", "da header" in t and not (DATA / "workspace" / "altro-id").exists(), t)
+            t = testo(await s5.call_tool("scarica_file", {"url": W + "/file.bin"}))
+            check("header: scarica_file nella cartella della conversazione", (DATA / "workspace" / "owui-abc" / "file.bin").exists(), t)
+            r = await s5.call_tool("screenshot_pagina", {"url": W + "/articolo"})
+            check("header: screenshot nella cartella della conversazione", any((DATA / "workspace" / "owui-abc" / "screenshot").glob("*.png")), testo(r))
+            t = testo(await s5.call_tool("invia_email", {"destinatario": "io", "testo": "allegato locale", "allegati": ["h.txt"]}))
+            t = testo(await s5.call_tool("invia_email", {"codice_conferma": codice(t)}))
+            m = [x[1] for x in SMTP_LOG if x[0] == "send"][-1]
+            check("header: allegato preso dalla cartella della conversazione", "Email inviata" in t
+                  and [a.get_filename() for a in m.iter_attachments()] == ["h.txt"], t)
+    async with streamablehttp_client("http://127.0.0.1:18000/", headers={**hdr, "X-OpenWebUI-Chat-Id": "{{CHAT_ID}}"}) as (rd, wr, _):
+        async with ClientSession(rd, wr) as s6:
+            await s6.initialize()
+            t = testo(await s6.call_tool("file_leggi", {"percorso": "prog/app.py"}))
+            check("header non valido ignorato (si usa la radice)", "return 41 + 1" in t, t)
 
     # --- '--check' non deve creare cartelle (eseguito da root le renderebbe non scrivibili dal servizio) ---
     import subprocess as sp

@@ -34,6 +34,7 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
     TIMEZONE=Europe/Rome
     DISABLED_TOOLS=                  # elenco separato da virgole di tool da nascondere
     ENABLE_TERMINAL=true  ENABLE_MUSIC=true  ENABLE_HASS=true  ENABLE_CALENDAR=true
+    CONVERSAZIONE_HEADER=X-OpenWebUI-Chat-Id   # header con l'ID chat: una sottocartella del workspace per conversazione
 
   Web
     WEB_ALLOW_PRIVATE_URLS=false     # true = permette di leggere URL della rete locale (rischio SSRF)
@@ -130,11 +131,12 @@ from difflib import SequenceMatcher
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from pathlib import Path
-from typing import Any, Literal, Optional, Union
+from typing import Annotated, Any, Literal, Optional, Union
 from urllib.parse import quote, quote_plus, urljoin, urlparse, parse_qs
 from zoneinfo import ZoneInfo
 
 import requests
+from pydantic import Field
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -285,6 +287,9 @@ MUSIC_START_TIMEOUT = _env_int("MUSIC_START_TIMEOUT", 45)
 
 # --- Terminale ---
 TERMINAL_MAX_OUTPUT = _env_int("TERMINAL_MAX_OUTPUT", 12000)
+# Header HTTP con l'ID della conversazione (es. configurato in OpenWebUI come "X-OpenWebUI-Chat-Id: {{CHAT_ID}}").
+# Se presente, ogni conversazione lavora in una propria sottocartella del workspace. Vuoto = disattivato.
+CONVERSAZIONE_HEADER = _env("CONVERSAZIONE_HEADER", "X-OpenWebUI-Chat-Id")
 TERMINAL_MAX_TIMEOUT = _env_int("TERMINAL_MAX_TIMEOUT", 900)
 DOWNLOAD_MAX_MB = _env_int("DOWNLOAD_MAX_MB", 200)
 
@@ -430,6 +435,13 @@ def tool(
 # =============================================================================
 # UTILITA' COMUNI
 # =============================================================================
+# Parametro comune dei tool che usano il workspace (vedi cartella_lavoro)
+IdConversazione = Annotated[Optional[str], Field(
+    description="ID della conversazione corrente (facoltativo). Se indicato, i file vengono letti e scritti "
+                "nella sottocartella del workspace con questo nome, creata se non esiste. Usa sempre lo "
+                "stesso ID per tutta la conversazione.")]
+
+
 GIORNI = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
 GIORNI_BREVI = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
 MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
@@ -1336,10 +1348,13 @@ async def leggi_pagina_web(url: str, parte: int = 1) -> str:
     description=(
         "Apre un URL e restituisce uno screenshot (immagine) della pagina, utile per vedere layout, grafici, "
         "mappe o contenuti visivi che il testo non descrive. Lo screenshot viene anche salvato nel workspace."
+        " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     read_only=True,
 )
-async def screenshot_pagina(url: str, pagina_intera: bool = False) -> list:
+async def screenshot_pagina(url: str, pagina_intera: bool = False, id_conversazione: IdConversazione = None,
+                            ctx: Optional[Context] = None) -> list:
+    base = cartella_lavoro(id_conversazione, ctx)
     if not FEATURES["web"]:
         raise UserError("Playwright non disponibile.")
     url = await asyncio.to_thread(controlla_url, url)
@@ -1354,13 +1369,13 @@ async def screenshot_pagina(url: str, pagina_intera: bool = False) -> list:
             png = await page.screenshot(clip={"x": 0, "y": 0, "width": 1366, "height": altezza}, full_page=True)
         else:
             png = await page.screenshot()
-    cartella = WORKSPACE_DIR / "screenshot"
+    cartella = base / "screenshot"
     cartella.mkdir(exist_ok=True)
     nome = cartella / f"screenshot_{now():%Y%m%d_%H%M%S}.png"
     nome.write_bytes(png)
     img = await asyncio.to_thread(immagine_a_contenuto, png, 1366)
     return [TextContent(type="text", text=f"Screenshot di '{titolo}' ({url}) salvato in "
-                                          f"{nome.relative_to(WORKSPACE_DIR)}"), img]
+                                          f"{relativo(nome, base)}"), img]
 
 
 # =============================================================================
@@ -1474,20 +1489,23 @@ async def cerca_immagini(query: str, numero: int = 4, mostra_anteprime: bool = T
     description=(
         "Scarica un'immagine da un URL (o da un file nel workspace) e te la mostra, cosi' puoi descriverla "
         "o analizzarla. Restituisce anche il markdown per mostrarla all'utente."
+        " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     read_only=True,
 )
-async def vedi_immagine(sorgente: str) -> list:
+async def vedi_immagine(sorgente: str, id_conversazione: IdConversazione = None,
+                        ctx: Optional[Context] = None) -> list:
     sorgente = sorgente.strip()
     if sorgente.startswith(("http://", "https://")):
         dati, headers, finale = await asyncio.to_thread(http_get, sorgente, max_bytes=15 * 1024 * 1024)
         md = f"![immagine]({finale})"
     else:
-        p = percorso_workspace(sorgente)
+        base = cartella_lavoro(id_conversazione, ctx)
+        p = percorso_workspace(sorgente, base)
         if not p.is_file():
             raise UserError(f"File non trovato: {sorgente}")
         dati = p.read_bytes()
-        md = f"(file locale {p.relative_to(WORKSPACE_DIR)})"
+        md = f"(file locale {relativo(p, base)})"
     try:
         img = await asyncio.to_thread(immagine_a_contenuto, dati, 1024)
     except UserError:
@@ -1503,13 +1521,16 @@ async def vedi_immagine(sorgente: str) -> list:
     description=(
         "Scarica un file da un URL http/https e lo salva nel workspace (es. dataset, archivi, PDF). "
         "Restituisce percorso e dimensione. Per i repository git usa invece terminale_esegui con 'git clone'."
+        " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     group="terminal",
 )
-async def scarica_file(url: str, percorso_destinazione: str = "") -> str:
+async def scarica_file(url: str, percorso_destinazione: str = "", id_conversazione: IdConversazione = None,
+                       ctx: Optional[Context] = None) -> str:
     url = await asyncio.to_thread(controlla_url, url)
+    base = cartella_lavoro(id_conversazione, ctx)
     nome = percorso_destinazione.strip() or (Path(urlparse(url).path).name or "download.bin")
-    dest = percorso_workspace(nome)
+    dest = percorso_workspace(nome, base)
     if dest.is_dir():
         dest = dest / (Path(urlparse(url).path).name or "download.bin")
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1520,7 +1541,7 @@ async def scarica_file(url: str, percorso_destinazione: str = "") -> str:
         os.replace(tmp, dest)
     finally:
         tmp.unlink(missing_ok=True)
-    return (f"Scaricato {finale}\n→ {dest.relative_to(WORKSPACE_DIR)} "
+    return (f"Scaricato {finale}\n→ {relativo(dest, base)} "
             f"({dest.stat().st_size / 1024:.1f} KB, {headers.get('Content-Type', 'tipo sconosciuto')})")
 
 
@@ -2106,7 +2127,8 @@ async def _chiedi_conferma(ctx: Optional[Context], tipo: str, dati: dict, frase:
     )
 
 
-def _controlla_allegati(allegati: list[str]) -> list[str]:
+def _controlla_allegati(allegati: list[str], base: Optional[Path] = None) -> list[str]:
+    """Verifica gli allegati: gli URL restano tali, i file locali diventano percorsi assoluti nel workspace."""
     puliti = []
     for a in allegati[:10]:
         a = str(a).strip()
@@ -2115,9 +2137,10 @@ def _controlla_allegati(allegati: list[str]) -> list[str]:
         if a.startswith(("http://", "https://")):
             controlla_url(a)
         else:
-            p = percorso_workspace(a)
+            p = percorso_workspace(a, base)
             if not p.is_file():
                 raise UserError(f"Allegato non trovato nel workspace: {a}")
+            a = str(p)
         puliti.append(a)
     return puliti
 
@@ -2191,14 +2214,15 @@ def _invia_email_sync(dati: dict) -> None:
         "oppure un indirizzo email. Se il recapito non e' in rubrica lo strumento ti dice cosa chiedere "
         "all'utente e di salvarlo con rubrica_salva. L'invio richiede SEMPRE la conferma dell'utente: la prima "
         "chiamata prepara l'email e ti restituisce la domanda di conferma; solo dopo il si' dell'utente "
-        "richiami lo strumento con il codice_conferma ricevuto. allegati: URL di immagini/file o percorsi del workspace."
+        "richiami lo strumento con il codice_conferma ricevuto. allegati: URL di immagini/file o percorsi del workspace "
+        "(con id_conversazione, relativi alla cartella della conversazione)."
     ),
     group="email",
     destructive=True,
 )
 async def invia_email(destinatario: str = "io", oggetto: str = "", testo: str = "",
                       allegati: Union[list[str], str, None] = None, codice_conferma: str = "",
-                      ctx: Optional[Context] = None) -> str:
+                      id_conversazione: IdConversazione = None, ctx: Optional[Context] = None) -> str:
     if codice_conferma.strip():
         dati = _prendi_attesa(codice_conferma, "email")
     else:
@@ -2208,7 +2232,8 @@ async def invia_email(destinatario: str = "io", oggetto: str = "", testo: str = 
         if not indirizzo:
             return messaggio
         dati = {"a": indirizzo, "chiave": chiave, "oggetto": (oggetto.strip() or "Messaggio dal tuo assistente")[:200],
-                "testo": testo.strip(), "allegati": await asyncio.to_thread(_controlla_allegati, _lista_testi(allegati))}
+                "testo": testo.strip(), "allegati": await asyncio.to_thread(_controlla_allegati, _lista_testi(allegati),
+                                                 cartella_lavoro(id_conversazione, ctx))}
         frase = (f"Mando la mail a {indirizzo}?" if chiave in ("io", indirizzo)
                  else f"Mando la mail a {chiave} all'indirizzo {indirizzo}?")
         anteprima = (f"A: {indirizzo}\nOggetto: {dati['oggetto']}\nTesto:\n{tronca(dati['testo'], 1500)}"
@@ -2265,17 +2290,20 @@ def _invia_whatsapp_sync(dati: dict) -> None:
         "di un contatto della rubrica oppure un numero. Se il numero non e' in rubrica lo strumento ti dice cosa "
         "chiedere all'utente e di salvarlo con rubrica_salva. L'invio richiede SEMPRE la conferma dell'utente: "
         "la prima chiamata prepara il messaggio e ti restituisce la domanda di conferma; solo dopo il si' "
-        "dell'utente richiami lo strumento con il codice_conferma ricevuto."
+        "dell'utente richiami lo strumento con il codice_conferma ricevuto. Le immagini possono essere anche file "
+        "del workspace (con id_conversazione, relativi alla cartella della conversazione)."
     ),
     group="whatsapp",
     destructive=True,
 )
 async def invia_whatsapp(destinatario: str = "io", testo: str = "", immagini: Union[list[str], str, None] = None,
-                         codice_conferma: str = "", ctx: Optional[Context] = None) -> str:
+                         codice_conferma: str = "", id_conversazione: IdConversazione = None,
+                         ctx: Optional[Context] = None) -> str:
     if codice_conferma.strip():
         dati = _prendi_attesa(codice_conferma, "whatsapp")
     else:
-        lista = await asyncio.to_thread(_controlla_allegati, _lista_testi(immagini))
+        lista = await asyncio.to_thread(_controlla_allegati, _lista_testi(immagini),
+                                        cartella_lavoro(id_conversazione, ctx))
         if not testo.strip() and not lista:
             raise UserError("Indica il testo del messaggio e/o le immagini da inviare.")
         numero, chiave, messaggio = await asyncio.to_thread(risolvi_destinatario, destinatario, "telefono")
@@ -2303,27 +2331,79 @@ _CHIAVI_SENSIBILI = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|CR
                                r"^HASS_|^GOOGLE_|^MCP_|^AWS_|^OPENAI|^ANTHROPIC)", re.I)
 
 
-def env_sicuro() -> dict[str, str]:
+def env_sicuro(base: Optional[Path] = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not _CHIAVI_SENSIBILI.search(k)}
     env.update({"PYTHONUNBUFFERED": "1", "GIT_TERMINAL_PROMPT": "0", "TERM": "dumb",
                 "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PAGER": "cat", "GIT_PAGER": "cat",
-                "WORKSPACE": str(WORKSPACE_DIR)})
+                "WORKSPACE": str(base or WORKSPACE_DIR)})
     venv_bin = str(Path(sys.executable).parent)
     if venv_bin not in env.get("PATH", ""):
         env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
     return env
 
 
-def percorso_workspace(p: str) -> Path:
-    """Risolve un percorso garantendo che resti dentro il workspace (anche seguendo symlink)."""
+def percorso_workspace(p: str, base: Optional[Path] = None) -> Path:
+    """
+    Risolve un percorso garantendo che resti dentro 'base' (default: tutto il workspace), anche seguendo
+    i symlink. I percorsi relativi partono da 'base'.
+    """
+    radice = Path(os.path.realpath(base or WORKSPACE_DIR))
+    if radice != WORKSPACE_DIR and WORKSPACE_DIR not in radice.parents:
+        raise UserError("Cartella di lavoro fuori dal workspace non consentita.")
     p = (p or ".").strip()
     candidato = Path(p).expanduser()
     if not candidato.is_absolute():
-        candidato = WORKSPACE_DIR / candidato
+        candidato = radice / candidato
     reale = Path(os.path.realpath(candidato))
-    if reale != WORKSPACE_DIR and WORKSPACE_DIR not in reale.parents:
-        raise UserError(f"Percorso fuori dal workspace non consentito: {p}")
+    if reale != radice and radice not in reale.parents:
+        dove = "" if radice == WORKSPACE_DIR else " della conversazione"
+        raise UserError(f"Percorso fuori dal workspace{dove} non consentito: {p}")
     return reale
+
+
+_RE_ID_CONV = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$")
+
+def _id_da_header(ctx: Optional[Context]) -> str:
+    if ctx is None or not CONVERSAZIONE_HEADER:
+        return ""
+    try:
+        richiesta = ctx.request_context.request
+        valore = (richiesta.headers.get(CONVERSAZIONE_HEADER) or "").strip() if richiesta is not None else ""
+    except Exception:
+        return ""
+    if valore and not _RE_ID_CONV.match(valore):
+        logger.warning(f"Header {CONVERSAZIONE_HEADER} ignorato, valore non valido: {valore[:60]!r}")
+        return ""
+    return valore
+
+
+def cartella_lavoro(id_conversazione: Optional[str] = None, ctx: Optional[Context] = None) -> Path:
+    """
+    Cartella in cui lavorano i tool: la sottocartella della conversazione (creata se non esiste) oppure,
+    senza ID, la radice del workspace. L'ID inviato dal client nell'header ha la precedenza sul parametro.
+    """
+    da_header = _id_da_header(ctx)
+    cid = da_header or (id_conversazione or "").strip()
+    if not cid:
+        return WORKSPACE_DIR
+    if not _RE_ID_CONV.match(cid) or ".." in cid:
+        raise UserError(f"ID conversazione non valido: '{cid[:60]}' (ammessi lettere, numeri, '-', '_' e '.').")
+    if da_header and id_conversazione and id_conversazione.strip() != da_header:
+        logger.info(f"ID conversazione dal parametro ({id_conversazione!r}) ignorato: uso quello dell'header")
+    cartella = WORKSPACE_DIR / cid
+    if not cartella.exists():
+        cartella.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Creata la cartella della conversazione '{cid}' "
+                    f"(ID {'dall header ' + CONVERSAZIONE_HEADER if da_header else 'dal parametro id_conversazione'})")
+    return percorso_workspace(".", cartella)
+
+
+def relativo(p: Path, base: Path) -> str:
+    try:
+        r = str(p.relative_to(base))
+    except ValueError:
+        r = str(p)
+    return "." if r in ("", ".") else r
 
 
 def _taglia_output(testo: str) -> str:
@@ -2337,7 +2417,7 @@ class GestoreProcessi:
         self.jobs: dict[str, dict] = {}
         self.cartella = DATA_DIR / "jobs"
 
-    async def avvia(self, comando: str, cwd: Path) -> str:
+    async def avvia(self, comando: str, cwd: Path, base: Optional[Path] = None) -> str:
         attivi = [j for j in self.jobs.values() if j["proc"].returncode is None]
         if len(attivi) >= 10:
             raise UserError("Troppi processi in background (max 10): terminane qualcuno.")
@@ -2347,10 +2427,11 @@ class GestoreProcessi:
         fh = open(log, "wb")
         proc = await asyncio.create_subprocess_exec(
             "bash", "-c", comando, cwd=str(cwd), stdout=fh, stderr=subprocess.STDOUT,
-            stdin=subprocess.DEVNULL, env=env_sicuro(), start_new_session=True,
+            stdin=subprocess.DEVNULL, env=env_sicuro(base), start_new_session=True,
         )
         fh.close()
-        self.jobs[jid] = {"proc": proc, "comando": comando, "log": log, "avvio": time.time(), "cwd": str(cwd)}
+        self.jobs[jid] = {"proc": proc, "comando": comando, "log": log, "avvio": time.time(), "cwd": str(cwd),
+                          "base": str(base or WORKSPACE_DIR)}
         return jid
 
     def output(self, jid: str, ultimi: int = 6000) -> str:
@@ -2382,11 +2463,12 @@ class GestoreProcessi:
 PROCESSI = GestoreProcessi()
 
 
-async def esegui_comando(comando: str, cwd: Path, timeout: int) -> tuple[int, str, float]:
+async def esegui_comando(comando: str, cwd: Path, timeout: int,
+                         base: Optional[Path] = None) -> tuple[int, str, float]:
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
         "bash", "-c", comando, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, env=env_sicuro(), start_new_session=True,
+        stdin=subprocess.DEVNULL, env=env_sicuro(base), start_new_session=True,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
@@ -2409,42 +2491,50 @@ async def esegui_comando(comando: str, cwd: Path, timeout: int) -> tuple[int, st
         "per comandi in sequenza usa '&&'. Restituisce codice di uscita e output (stdout+stderr). "
         "Per server o comandi molto lunghi usa in_background=true e poi terminale_processi. "
         "Non usare comandi interattivi (usa flag come -y)."
+        " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     group="terminal",
     destructive=True,
 )
 async def terminale_esegui(comando: str, cartella: str = ".", timeout_secondi: int = 120,
-                           in_background: bool = False) -> str:
+                           in_background: bool = False, id_conversazione: IdConversazione = None,
+                           ctx: Optional[Context] = None) -> str:
     if not comando.strip():
         raise UserError("Comando vuoto.")
-    cwd = percorso_workspace(cartella)
+    base = cartella_lavoro(id_conversazione, ctx)
+    cwd = percorso_workspace(cartella, base)
     if not cwd.is_dir():
         raise UserError(f"Cartella inesistente: {cartella}")
     logger.info(f"[terminale] ({cwd}) $ {comando}")
     if in_background:
-        jid = await PROCESSI.avvia(comando, cwd)
+        jid = await PROCESSI.avvia(comando, cwd, base)
         await asyncio.sleep(1.5)
         return (f"Avviato in background con id '{jid}'.\nOutput iniziale:\n{PROCESSI.output(jid, 2000) or '(nessuno)'}"
                 f"\nUsa terminale_processi(azione='output', id='{jid}') per seguirlo.")
     timeout = max(1, min(int(timeout_secondi or 120), TERMINAL_MAX_TIMEOUT))
-    codice, out, durata = await esegui_comando(comando, cwd, timeout)
-    rel = "." if cwd == WORKSPACE_DIR else str(cwd.relative_to(WORKSPACE_DIR))
-    return (f"$ {comando}\n[cartella: {rel} · codice uscita: {codice} · {durata:.1f}s]\n\n"
+    codice, out, durata = await esegui_comando(comando, cwd, timeout, base)
+    return (f"$ {comando}\n[cartella: {relativo(cwd, base)} · codice uscita: {codice} · {durata:.1f}s]\n\n"
             f"{_taglia_output(out) or '(nessun output)'}")
 
 
 @tool(
     "terminale_processi",
     title="Processi in background",
-    description="Gestisce i processi avviati con terminale_esegui(in_background=true). azione: 'lista', 'output' (richiede id) o 'termina' (richiede id).",
+    description=("Gestisce i processi avviati con terminale_esegui(in_background=true). azione: 'lista', "
+                 "'output' (richiede id) o 'termina' (richiede id). Con id_conversazione la lista mostra solo "
+                 "i processi di quella conversazione."),
     group="terminal",
 )
-async def terminale_processi(azione: Literal["lista", "output", "termina"] = "lista", id: str = "") -> str:
+async def terminale_processi(azione: Literal["lista", "output", "termina"] = "lista", id: str = "",
+                             id_conversazione: IdConversazione = None, ctx: Optional[Context] = None) -> str:
     if azione == "lista":
-        if not PROCESSI.jobs:
+        filtro = cartella_lavoro(id_conversazione, ctx)
+        jobs = {jid: j for jid, j in PROCESSI.jobs.items()
+                if filtro == WORKSPACE_DIR or j.get("base") == str(filtro)}
+        if not jobs:
             return "Nessun processo in background."
         righe = []
-        for jid, j in PROCESSI.jobs.items():
+        for jid, j in jobs.items():
             stato = "in esecuzione" if j["proc"].returncode is None else f"terminato (codice {j['proc'].returncode})"
             righe.append(f"[{jid}] {stato} · da {fmt_durata(time.time() - j['avvio'])} · {j['comando'][:120]}")
         return "\n".join(righe)
@@ -2464,11 +2554,14 @@ async def terminale_processi(azione: Literal["lista", "output", "termina"] = "li
         "Esegue uno script Python (stesso interprete del server, con le librerie installate) nel workspace "
         "e restituisce l'output. Utile per calcoli complessi, analisi dati, conversioni, grafici "
         "(salva i file nel workspace). Usa print() per mostrare i risultati."
+        " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     group="terminal",
     destructive=True,
 )
-async def esegui_python(codice: str, timeout_secondi: int = 60) -> str:
+async def esegui_python(codice: str, timeout_secondi: int = 60, id_conversazione: IdConversazione = None,
+                        ctx: Optional[Context] = None) -> str:
+    base = cartella_lavoro(id_conversazione, ctx)
     tmpdir = WORKSPACE_DIR / ".tmp"
     tmpdir.mkdir(exist_ok=True)
     script = tmpdir / f"snippet_{secrets.token_hex(4)}.py"
@@ -2476,7 +2569,7 @@ async def esegui_python(codice: str, timeout_secondi: int = 60) -> str:
     try:
         timeout = max(1, min(int(timeout_secondi or 60), TERMINAL_MAX_TIMEOUT))
         codice_uscita, out, durata = await esegui_comando(
-            f"{quote_shell(sys.executable)} {quote_shell(str(script))}", WORKSPACE_DIR, timeout)
+            f"{quote_shell(sys.executable)} {quote_shell(str(script))}", base, timeout, base)
     finally:
         script.unlink(missing_ok=True)
     return f"[codice uscita: {codice_uscita} · {durata:.1f}s]\n{_taglia_output(out) or '(nessun output)'}"
@@ -2490,12 +2583,13 @@ def quote_shell(s: str) -> str:
 @tool(
     "file_leggi",
     title="Leggi file",
-    description="Legge un file di testo del workspace con numeri di riga. Per file lunghi usa da_riga e num_righe.",
+    description="Legge un file di testo del workspace con numeri di riga. Per file lunghi usa da_riga e num_righe." + " Facoltativo: id_conversazione per lavorare nella cartella della conversazione.",
     group="terminal",
     read_only=True,
 )
-async def file_leggi(percorso: str, da_riga: int = 1, num_righe: int = 400) -> str:
-    p = percorso_workspace(percorso)
+async def file_leggi(percorso: str, da_riga: int = 1, num_righe: int = 400,
+                     id_conversazione: IdConversazione = None, ctx: Optional[Context] = None) -> str:
+    p = percorso_workspace(percorso, cartella_lavoro(id_conversazione, ctx))
     if not p.is_file():
         raise UserError(f"File non trovato: {percorso}")
     if p.stat().st_size > 50 * 1024 * 1024:
@@ -2517,12 +2611,14 @@ async def file_leggi(percorso: str, da_riga: int = 1, num_righe: int = 400) -> s
 @tool(
     "file_scrivi",
     title="Scrivi file",
-    description="Crea o sovrascrive un file di testo nel workspace (crea le cartelle mancanti). Con aggiungi=true accoda al file esistente.",
+    description="Crea o sovrascrive un file di testo nel workspace (crea le cartelle mancanti). Con aggiungi=true accoda al file esistente." + " Facoltativo: id_conversazione per lavorare nella cartella della conversazione.",
     group="terminal",
     destructive=True,
 )
-async def file_scrivi(percorso: str, contenuto: str, aggiungi: bool = False) -> str:
-    p = percorso_workspace(percorso)
+async def file_scrivi(percorso: str, contenuto: str, aggiungi: bool = False,
+                      id_conversazione: IdConversazione = None, ctx: Optional[Context] = None) -> str:
+    base = cartella_lavoro(id_conversazione, ctx)
+    p = percorso_workspace(percorso, base)
     if p.is_dir():
         raise UserError(f"'{percorso}' e' una cartella.")
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -2530,7 +2626,7 @@ async def file_scrivi(percorso: str, contenuto: str, aggiungi: bool = False) -> 
     with open(p, "a" if aggiungi else "w", encoding="utf-8") as fh:
         fh.write(contenuto)
     azione = "Aggiunto a" if aggiungi else ("Sovrascritto" if esisteva else "Creato")
-    return f"{azione} {p.relative_to(WORKSPACE_DIR)} ({len(contenuto)} caratteri, {contenuto.count(chr(10)) + 1} righe)."
+    return f"{azione} {relativo(p, base)} ({len(contenuto)} caratteri, {contenuto.count(chr(10)) + 1} righe)."
 
 
 @tool(
@@ -2540,13 +2636,16 @@ async def file_scrivi(percorso: str, contenuto: str, aggiungi: bool = False) -> 
         "Modifica un file del workspace sostituendo testo_vecchio (che deve comparire esattamente, una sola volta, "
         "spazi inclusi) con testo_nuovo. Con tutte_le_occorrenze=true sostituisce ogni occorrenza. "
         "Leggi prima il file con file_leggi."
+        " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     group="terminal",
     destructive=True,
 )
 async def file_modifica(percorso: str, testo_vecchio: str, testo_nuovo: str,
-                        tutte_le_occorrenze: bool = False) -> str:
-    p = percorso_workspace(percorso)
+                        tutte_le_occorrenze: bool = False, id_conversazione: IdConversazione = None,
+                        ctx: Optional[Context] = None) -> str:
+    base = cartella_lavoro(id_conversazione, ctx)
+    p = percorso_workspace(percorso, base)
     if not p.is_file():
         raise UserError(f"File non trovato: {percorso}")
     if not testo_vecchio:
@@ -2561,25 +2660,27 @@ async def file_modifica(percorso: str, testo_vecchio: str, testo_nuovo: str,
         else contenuto.replace(testo_vecchio, testo_nuovo, 1)
     p.write_text(nuovo, encoding="utf-8")
     riga = contenuto[: contenuto.index(testo_vecchio)].count("\n") + 1
-    return f"Modificato {p.relative_to(WORKSPACE_DIR)}: {n if tutte_le_occorrenze else 1} sostituzione/i (prima alla riga {riga})."
+    return f"Modificato {relativo(p, base)}: {n if tutte_le_occorrenze else 1} sostituzione/i (prima alla riga {riga})."
 
 
 @tool(
     "file_elenca",
     title="Elenca file",
-    description="Elenca file e cartelle del workspace. 'pattern' e' un glob (es. '*.py', '**/*.md' per ricorsivo).",
+    description="Elenca file e cartelle del workspace. 'pattern' e' un glob (es. '*.py', '**/*.md' per ricorsivo)." + " Facoltativo: id_conversazione per lavorare nella cartella della conversazione.",
     group="terminal",
     read_only=True,
 )
-async def file_elenca(percorso: str = ".", pattern: str = "*") -> str:
-    base = percorso_workspace(percorso)
+async def file_elenca(percorso: str = ".", pattern: str = "*", id_conversazione: IdConversazione = None,
+                      ctx: Optional[Context] = None) -> str:
+    radice = cartella_lavoro(id_conversazione, ctx)
+    base = percorso_workspace(percorso, radice)
     if not base.is_dir():
         raise UserError(f"Cartella non trovata: {percorso}")
     voci = []
     for p in sorted(base.glob(pattern or "*")):
         if any(part in (".git", "__pycache__", "node_modules", ".tmp") for part in p.relative_to(base).parts[:-1]):
             continue
-        rel = p.relative_to(WORKSPACE_DIR)
+        rel = relativo(p, radice)
         if p.is_dir():
             voci.append(f"📁 {rel}/")
         else:
@@ -2588,20 +2689,22 @@ async def file_elenca(percorso: str = ".", pattern: str = "*") -> str:
         if len(voci) >= 500:
             voci.append("[... elenco troncato a 500 voci ...]")
             break
-    rel_base = "." if base == WORKSPACE_DIR else base.relative_to(WORKSPACE_DIR)
-    return f"Workspace/{rel_base} — {len(voci)} voci:\n" + ("\n".join(voci) or "(vuota)")
+    nome_radice = "Workspace" if radice == WORKSPACE_DIR else f"Cartella della conversazione {radice.name}"
+    return f"{nome_radice}/{relativo(base, radice)} — {len(voci)} voci:\n" + ("\n".join(voci) or "(vuota)")
 
 
 @tool(
     "file_cerca",
     title="Cerca nei file",
-    description="Cerca un'espressione regolare nel contenuto dei file del workspace (come grep -rn). 'filtro_file' e' un glob (es. '*.py').",
+    description="Cerca un'espressione regolare nel contenuto dei file del workspace (come grep -rn). 'filtro_file' e' un glob (es. '*.py')." + " Facoltativo: id_conversazione per lavorare nella cartella della conversazione.",
     group="terminal",
     read_only=True,
 )
 async def file_cerca(regex: str, percorso: str = ".", filtro_file: str = "*",
-                     ignora_maiuscole: bool = False) -> str:
-    base = percorso_workspace(percorso)
+                     ignora_maiuscole: bool = False, id_conversazione: IdConversazione = None,
+                     ctx: Optional[Context] = None) -> str:
+    radice = cartella_lavoro(id_conversazione, ctx)
+    base = percorso_workspace(percorso, radice)
     try:
         rx = re.compile(regex, re.I if ignora_maiuscole else 0)
     except re.error as e:
@@ -2620,7 +2723,7 @@ async def file_cerca(regex: str, percorso: str = ".", filtro_file: str = "*",
                     try:
                         for n, riga in enumerate(fh, 1):
                             if rx.search(riga):
-                                trovati.append(f"{f.relative_to(WORKSPACE_DIR)}:{n}: {riga.rstrip()[:300]}")
+                                trovati.append(f"{relativo(f, radice)}:{n}: {riga.rstrip()[:300]}")
                                 if len(trovati) >= 200:
                                     return trovati
                     except UnicodeDecodeError:
