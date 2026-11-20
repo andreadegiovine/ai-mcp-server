@@ -6,6 +6,12 @@ playwright
 ddgs
 pillow
 pypdf
+pypdfium2
+python-docx
+openpyxl
+xlrd
+python-pptx
+striprtf
 yt-dlp
 ytmusicapi
 google-api-python-client

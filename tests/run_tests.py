@@ -327,6 +327,66 @@ async def main():
             t2 = testo(await call("terminale_processi", azione="lista", id_conversazione="chat-nuova"))
             check("conv: lista processi filtrata per conversazione", "sleep 2" in t1 and "Nessun processo" in t2, (t1, t2))
 
+            # --- file_leggi: documenti (Word, Excel, PowerPoint, OpenDocument, PDF, OCR, ...) ---
+            import documenti
+            disp = await asyncio.to_thread(documenti.crea, DATA / "workspace" / "docs", mocks._pdf())
+            leggi = lambda f: call("file_leggi", percorso=f, id_conversazione="docs")  # noqa: E731
+            t = testo(await leggi("relazione.docx"))
+            check("documenti: Word .docx (titoli, elenchi, tabelle)", "[Documento word: relazione.docx" in t
+                  and "# Relazione condominio" in t and "- Primo punto" in t and "Tetto | 12500" in t, t)
+            t = testo(await leggi("spese.xlsx"))
+            check("documenti: Excel .xlsx (fogli, date, numeri)", "## Foglio: Spese" in t and "15/03/2026 | Pulizia scale | 120.5" in t
+                  and "01/04/2026 | Ascensore | 300" in t and "## Foglio: Note" in t, t)
+            t = testo(await leggi("lavori.pptx"))
+            check("documenti: PowerPoint .pptx (slide, tabelle, note)", "--- Slide 1 ---" in t and "Piano lavori 2027" in t
+                  and "Facciata | 40000" in t and "[Note: Chiedere tre preventivi]" in t, t)
+            t = testo(await leggi("testo.pdf"))
+            check("documenti: PDF con testo", "--- Pagina 1 ---" in t and "4200 kWh" in t, t)
+            t = testo(await leggi("protetto.pdf")); check("documenti: PDF protetto da password", "password" in t, t)
+            t = testo(await leggi("nota.rtf")); check("documenti: RTF", "Ciao mondo, è una nota RTF." in t and "Seconda riga" in t, t)
+            t = testo(await leggi("libro.epub"))
+            check("documenti: EPUB nell'ordine dei capitoli", "Capitolo uno" in t and "Capitolo due" in t
+                  and t.index("Capitolo uno") < t.index("Capitolo due"), t)
+            t = testo(await leggi("convocazione.eml"))
+            check("documenti: email .eml", "Subject: Convocazione assemblea" in t and "10 dicembre" in t and "Allegati: odg.txt" in t, t)
+            t = testo(await leggi("pacchetto.zip")); check("documenti: zip (elenco file)", "dentro/uno.txt" in t and "2 file" in t, t)
+            t = testo(await leggi("pacchetto.tar.gz")); check("documenti: tar.gz (elenco file)", "nota.rtf" in t, t)
+            t = testo(await leggi("rotto.docx")); check("documenti: file danneggiato -> messaggio chiaro", "danneggiato" in t, t)
+            t = testo(await leggi("pagina.html")); check("documenti: HTML letto come sorgente", "<p>Sorgente HTML</p>" in t, t)
+            t = testo(await leggi("dati.bin")); check("documenti: binario sconosciuto", "formato non supportato" in t, t)
+            t = testo(await call("file_leggi", percorso="spese.xlsx", id_conversazione="docs", da_riga=3, num_righe=1))
+            check("documenti: paginazione con da_riga", "    3  " in t and "[righe 3-3 di" in t, t)
+            if disp["libreoffice"]:
+                t = testo(await leggi("relazione.doc"))
+                check("documenti: Word .doc (LibreOffice)", "Relazione condominio" in t and "Tetto | 12500" in t, t)
+                t = testo(await leggi("relazione.odt"))
+                check("documenti: OpenDocument .odt", "# Relazione condominio" in t and "Tetto | 12500" in t, t)
+                t = testo(await leggi("spese.xls")); check("documenti: Excel .xls (xlrd)", "Pulizia scale" in t and "## Foglio: Spese" in t, t)
+                t = testo(await leggi("spese.ods")); check("documenti: OpenDocument .ods", "Pulizia scale" in t and "Spese" in t, t)
+                t = testo(await leggi("lavori.ppt")); check("documenti: PowerPoint .ppt (LibreOffice)", "Piano lavori 2027" in t and "Facciata" in t, t)
+                t = testo(await leggi("lavori.odp")); check("documenti: OpenDocument .odp", "--- Slide 1 ---" in t and "Piano lavori 2027" in t, t)
+                t = testo(await leggi("esportato.xls")); check("documenti: falso .xls (HTML) via LibreOffice", "Rossi | 350" in t, t)
+            else:
+                print("   (LibreOffice non installato: test dei formati vecchi e OpenDocument saltati)")
+            if disp["ocr"]:
+                t = testo(await leggi("scansione.pdf")); check("documenti: PDF scansionato con OCR", "4521" in t and "OCR" in t, t)
+                t = testo(await leggi("scritta.png")); check("documenti: immagine con OCR", "FATTURA" in t and "4521" in t, t)
+            else:
+                print("   (tesseract non installato: test OCR saltati)")
+            originale_which = srv.shutil.which
+            srv.shutil.which = lambda n, *a, **k: None if n in ("tesseract", "soffice", "libreoffice") else originale_which(n, *a, **k)
+            try:
+                shutil.copy(DATA / "workspace" / "docs" / "scansione.pdf", DATA / "workspace" / "docs" / "scansione2.pdf")
+                t = testo(await leggi("scansione2.pdf"))
+                check("documenti: senza tesseract indica come installarlo", "tesseract-ocr" in t and "scansionato" in t, t)
+                t = testo(await leggi("scritta.png")); check("documenti: immagine senza OCR -> vedi_immagine", "vedi_immagine" in t, t)
+                if disp["libreoffice"]:
+                    shutil.copy(DATA / "workspace" / "docs" / "relazione.doc", DATA / "workspace" / "docs" / "relazione2.doc")
+                    t = testo(await leggi("relazione2.doc"))
+                    check("documenti: senza LibreOffice indica come installarlo", "libreoffice-writer-nogui" in t, t)
+            finally:
+                srv.shutil.which = originale_which
+
             # --- Home Assistant ---
             t = testo(await call("hass_cerca_entita", testo="temperatura soggiorno"))
             check("hass cerca: temperatura soggiorno", t.split("\n")[1].startswith("• sensor.temperatura_soggiorno") and "[area: Soggiorno]" in t, t)

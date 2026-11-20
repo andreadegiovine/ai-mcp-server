@@ -6,6 +6,23 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-20 · Lettura dei documenti
+
+### Attività svolte
+- ✅ `file_leggi` estrae il testo dai documenti del workspace: PDF (anche protetti senza password o scansionati, con OCR), Word `.docx`/`.doc`, Excel `.xlsx`/`.xls`, PowerPoint `.pptx`/`.ppt`, LibreOffice `.odt`/`.ods`/`.odp`, RTF, EPUB, email `.eml`, immagini (OCR) e archivi zip/tar (elenco dei file); paginazione con `da_riga`/`num_righe`, cache del testo estratto
+- ✅ Dipendenze Python aggiunte: `python-docx`, `openpyxl`, `xlrd`, `python-pptx`, `striprtf`, `pypdfium2`. Facoltativi sul sistema: `tesseract-ocr` (+ `tesseract-ocr-ita`) per l'OCR, LibreOffice `-nogui` per i vecchi formati Office e per gli `.xls` che in realtà sono HTML; se mancano, lo strumento indica il comando `apt`
+- ✅ Nuove variabili `OCR_LINGUE` e `OCR_MAX_PAGINE`
+- ✅ 26 nuovi test con documenti generati al momento, anche convertiti con LibreOffice e riconosciuti con l'OCR (**209/209 superati**)
+
+### Decisioni prese
+- HTML, CSV, JSON e codice restano testo grezzo, per poterli modificare con `file_modifica`
+- LibreOffice viene usato solo per i formati binari vecchi, una conversione alla volta e con un profilo dedicato in `data/.libreoffice`
+
+### Da verificare
+- ⏳ LibreOffice e tesseract eseguiti dal servizio come utente `mcp` con `ProtectSystem=strict` (provati solo come root nei test)
+
+---
+
 ## 2026-11-19 · Cartelle per conversazione
 
 ### Attività svolte

@@ -22,6 +22,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Domande all'utente](#domande-allutente)
 - [Email e WhatsApp](#email-e-whatsapp)
 - [Cartelle per conversazione](#cartelle-per-conversazione)
+- [Leggere documenti](#leggere-documenti)
 - [Timer e sveglie](#timer-e-sveglie)
 - [Google Calendar](#google-calendar)
 - [Sicurezza](#sicurezza)
@@ -62,7 +63,8 @@ Il server espone **46 tool**, divisi in gruppi. Un gruppo non configurato viene 
 | `terminale_esegui` | Esegue comandi bash nel workspace (git, pip, script, build…), con timeout ed esecuzione in background |
 | `terminale_processi` | Elenca, legge l'output o termina i processi in background |
 | `esegui_python` | Esegue codice Python con l'interprete del server |
-| `file_leggi` / `file_scrivi` / `file_modifica` | Lettura con numeri di riga, scrittura, modifica tramite sostituzione esatta di testo |
+| `file_leggi` | Legge file di testo e codice con numeri di riga, ed estrae il testo dai documenti: PDF (anche scansionati, con OCR), Word, Excel, PowerPoint, LibreOffice, RTF, EPUB, email, immagini e archivi (vedi [Leggere documenti](#leggere-documenti)) |
+| `file_scrivi` / `file_modifica` | Scrittura e modifica tramite sostituzione esatta di testo |
 | `file_elenca` / `file_cerca` | Elenco con glob e ricerca regex nei file (come `grep -rn`) |
 
 ### Home Assistant
@@ -123,6 +125,12 @@ Esempio con il server in `/opt/mcp-server`, dentro un container LXC Debian o Ubu
 
 ```bash
 apt update && apt install -y python3-venv git mpv
+```
+
+Facoltativi, per leggere PDF scansionati e immagini (OCR) e i vecchi formati Office `.doc`/`.ppt` (vedi [Leggere documenti](#leggere-documenti)):
+
+```bash
+apt install -y --no-install-recommends tesseract-ocr tesseract-ocr-ita libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui
 ```
 
 ```bash
@@ -329,6 +337,8 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 | `TERMINAL_MAX_OUTPUT` | `12000` | Caratteri massimi di output restituiti |
 | `TERMINAL_MAX_TIMEOUT` | `900` | Timeout massimo di un comando, in secondi |
 | `DOWNLOAD_MAX_MB` | `200` | Dimensione massima di `scarica_file` |
+| `OCR_LINGUE` | `ita+eng` | Lingue dell'OCR (pacchetti `tesseract-ocr-<lingua>`) |
+| `OCR_MAX_PAGINE` | `30` | Pagine massime riconosciute con l'OCR per ogni PDF scansionato |
 
 ### Email (SMTP)
 | Variabile | Default | Descrizione |
@@ -560,6 +570,31 @@ Tutti gli strumenti che usano il workspace accettano un ID di conversazione faco
 
 L'ID lo passa il modello nel parametro `id_conversazione`, e deve usare lo stesso valore per tutta la conversazione.
 
+
+---
+
+## Leggere documenti
+
+`file_leggi` riconosce il tipo di file (dall'estensione e dal contenuto) e ne estrae il testo, che poi si legge a pezzi con `da_riga` e `num_righe` come un normale file di testo. Per i documenti scaricati da internet: prima `scarica_file`, poi `file_leggi`.
+
+| Formato | Cosa restituisce | Requisiti |
+|---|---|---|
+| PDF | Testo pagina per pagina | `pypdf` (incluso) |
+| PDF scansionato | Testo riconosciuto con l'OCR (fino a `OCR_MAX_PAGINE` pagine) | `tesseract-ocr`, `tesseract-ocr-ita` |
+| Word `.docx` | Titoli (`#`), elenchi, tabelle (`colonna \| colonna`) | `python-docx` (incluso) |
+| Excel `.xlsx`, `.xls` | Un blocco per foglio, una riga per riga, con date e numeri leggibili | `openpyxl`, `xlrd` (inclusi) |
+| PowerPoint `.pptx` | Testo slide per slide, tabelle e note del relatore | `python-pptx` (incluso) |
+| LibreOffice `.odt`, `.ods`, `.odp` | Come Word, Excel e PowerPoint | nessuno |
+| Vecchi Office `.doc`, `.ppt` | Convertiti con LibreOffice, poi letti come `.docx`/`.pptx` | `libreoffice-writer-nogui`, `libreoffice-impress-nogui` |
+| `.xls` esportati dai gestionali (in realtà HTML) | Convertiti con LibreOffice | `libreoffice-calc-nogui` |
+| RTF, EPUB, email `.eml` | Testo; per le email anche intestazioni ed elenco degli allegati | `striprtf` (incluso) |
+| Immagini (`.png`, `.jpg`, ...) | Testo riconosciuto con l'OCR; per guardarle c'è `vedi_immagine` | `tesseract-ocr` |
+| Archivi `.zip`, `.tar.gz`, ... | Elenco dei file contenuti (per estrarli: `terminale_esegui`) | nessuno |
+
+File di testo, codice, `.csv`, `.json` e `.html` vengono letti così come sono, per poterli modificare con `file_modifica`.
+
+Se manca un programma facoltativo, lo strumento non va in errore: risponde con il comando `apt` da eseguire sul server. I PDF protetti da password e i file danneggiati danno un messaggio chiaro. LibreOffice viene usato in modalità senza interfaccia, con un profilo dedicato in `data/.libreoffice`, una conversione alla volta.
+
 ---
 
 ## Timer e sveglie
@@ -627,9 +662,9 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 183 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 209 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
-Richiede Chromium per Playwright e `mpv`. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
+Richiede Chromium per Playwright e `mpv`. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
 Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero e OpenWA.
 
@@ -646,7 +681,8 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 │   └── mcp-server.service     # unit systemd
 ├── tests/
 │   ├── run_tests.py           # test end-to-end
-│   └── mocks.py               # Home Assistant e sito web finti
+│   ├── mocks.py               # Home Assistant e sito web finti
+│   └── documenti.py           # documenti di prova (Word, Excel, PowerPoint, PDF, ...)
 └── docs/
     └── MILESTONES.md          # attività svolte e prossimi passi
 ```
