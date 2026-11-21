@@ -327,6 +327,43 @@ async def main():
             t2 = testo(await call("terminale_processi", azione="lista", id_conversazione="chat-nuova"))
             check("conv: lista processi filtrata per conversazione", "sleep 2" in t1 and "Nessun processo" in t2, (t1, t2))
 
+            # --- sandbox del terminale (bubblewrap) ---
+            if srv.sandbox_disponibile()[0]:
+                (DATA / "segreto.txt").write_text("PASSWORD-SEGRETA")
+                t = testo(await call("terminale_esegui", comando=f"ls /opt /mnt; cat {DATA}/segreto.txt; find / -name segreto.txt 2>/dev/null; ls"))
+                check("sandbox: niente /opt, /mnt e file fuori dal workspace", "PASSWORD-SEGRETA" not in t and "ls: cannot access '/opt'" in t
+                      and "ls: cannot access '/mnt'" in t and "prog" in t, t)
+                t = testo(await call("terminale_esegui", comando="echo fuga > ../fuga.txt; echo dentro > ok.txt; touch /usr/x 2>&1 | head -1",
+                                     id_conversazione="chat-123"))
+                check("sandbox: scritture solo nella cartella della conversazione", not (DATA / "workspace" / "fuga.txt").exists()
+                      and (DATA / "workspace" / "chat-123" / "ok.txt").exists() and "Read-only" in t, t)
+                t = testo(await call("terminale_esegui", comando=f"ls {DATA}/workspace/prog 2>&1 | head -1", id_conversazione="chat-123"))
+                check("sandbox: con id_conversazione il resto del workspace non si vede", "No such file" in t, t)
+                t = testo(await call("terminale_esegui", comando=f"curl -s {W}/file.bin | wc -c"))
+                check("sandbox: rete disponibile", "\n1000" in t, t)
+                t = testo(await call("esegui_python", codice=f"import requests, os; print(os.path.exists({str(DATA / 'segreto.txt')!r}), requests.__name__)"))
+                check("sandbox: python con le librerie del server, senza accesso fuori", "False requests" in t, t)
+                t = testo(await call("terminale_esegui", comando="sleep 30 && echo finito", in_background=True))
+                jid = t.split("id '")[1].split("'")[0]
+                await call("terminale_processi", azione="termina", id=jid)
+                await asyncio.sleep(1)
+                t = testo(await call("terminale_processi", azione="output", id=jid)); check("sandbox: processo in background terminabile", "terminato" in t, t)
+            else:
+                print("   (bubblewrap non disponibile: test della sandbox saltati)")
+            originale_sandbox, originale_modo = srv.sandbox_disponibile, srv.TERMINAL_SANDBOX
+            srv.sandbox_disponibile = lambda: (False, "simulata")
+            try:
+                srv.TERMINAL_SANDBOX = "obbligatoria"
+                t = testo(await call("terminale_esegui", comando="ls /"))
+                check("sandbox obbligatoria non disponibile -> terminale bloccato", "richiede la sandbox" in t, t)
+                t = testo(await call("esegui_python", codice="print(1)"))
+                check("sandbox obbligatoria non disponibile -> python bloccato", "richiede la sandbox" in t, t)
+                srv.TERMINAL_SANDBOX = "auto"
+                t = testo(await call("terminale_esegui", comando="ls / | grep -c opt"))
+                check("sandbox auto non disponibile -> comando eseguito senza sandbox", "\n1" in t, t)
+            finally:
+                srv.sandbox_disponibile, srv.TERMINAL_SANDBOX = originale_sandbox, originale_modo
+
             # --- file_leggi: documenti (Word, Excel, PowerPoint, OpenDocument, PDF, OCR, ...) ---
             import documenti
             disp = await asyncio.to_thread(documenti.crea, DATA / "workspace" / "docs", mocks._pdf())

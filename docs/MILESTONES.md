@@ -6,6 +6,24 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-21 · Sandbox del terminale
+
+### Problema
+Dal terminale l'agente ha trovato e potuto leggere file fuori dal workspace (`find / -name .env`: `/opt/mcp-server/.env`, `/mnt/hdd-esterno/...`). I tool sui file erano confinati, ma `terminale_esegui` ed `esegui_python` eseguivano comandi con i permessi dell'utente del servizio.
+
+### Attività svolte
+- ✅ Terminale, `esegui_python` e processi in background girano in una sandbox **bubblewrap**: vedono solo la cartella di lavoro (workspace o cartella della conversazione) e, in sola lettura, `/usr`, `/etc` (senza `/etc/mcp-server`) e il Python del server; `/tmp` e home temporanee; rete disponibile
+- ✅ `TERMINAL_SANDBOX` = `auto` (predefinito) / `obbligatoria` / `disattivata`; all'avvio il log dice se la sandbox è attiva e, se no, perché
+- ✅ Servizio systemd: `TemporaryFileSystem=/mnt:ro /media:ro /srv:ro`, che nasconde i dischi montati all'intero server anche senza sandbox
+- ✅ `bubblewrap` tra i pacchetti di installazione; README (sezione Sicurezza riscritta) e problemi comuni aggiornati
+- ✅ 9 nuovi test: niente `/opt`, `/mnt` né file fuori dal workspace, scritture solo nella cartella di lavoro, rete, Python, modalità obbligatoria e auto (**218/218 superati**)
+
+### Da verificare
+- ⏳ bubblewrap nel container LXC di Proxmox come utente `mcp` (potrebbe richiedere la funzionalità Nesting)
+- ⏳ `TemporaryFileSystem=` nel servizio sul container reale
+
+---
+
 ## 2026-11-20 · Lettura dei documenti
 
 ### Attività svolte

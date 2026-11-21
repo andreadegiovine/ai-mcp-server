@@ -124,7 +124,7 @@ data/
 Esempio con il server in `/opt/mcp-server`, dentro un container LXC Debian o Ubuntu **unprivileged**.
 
 ```bash
-apt update && apt install -y python3-venv git mpv
+apt update && apt install -y python3-venv git mpv bubblewrap
 ```
 
 Facoltativi, per leggere PDF scansionati e immagini (OCR) e i vecchi formati Office `.doc`/`.ppt` (vedi [Leggere documenti](#leggere-documenti)):
@@ -336,6 +336,7 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 |---|---|---|
 | `TERMINAL_MAX_OUTPUT` | `12000` | Caratteri massimi di output restituiti |
 | `TERMINAL_MAX_TIMEOUT` | `900` | Timeout massimo di un comando, in secondi |
+| `TERMINAL_SANDBOX` | `auto` | Sandbox bubblewrap per terminale ed `esegui_python`: `auto` (usala se disponibile), `obbligatoria` (senza sandbox il terminale non funziona), `disattivata`. Vedi [Sicurezza](#sicurezza) |
 | `DOWNLOAD_MAX_MB` | `200` | Dimensione massima di `scarica_file` |
 | `OCR_LINGUE` | `ita+eng` | Lingue dell'OCR (pacchetti `tesseract-ocr-<lingua>`) |
 | `OCR_MAX_PAGINE` | `30` | Pagine massime riconosciute con l'OCR per ogni PDF scansionato |
@@ -636,21 +637,40 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 ### Cosa è confinato dal server
 - I **tool sui file** restano nel workspace: `../` e i symlink verso l'esterno sono bloccati.
 - I **tool web** accettano solo `http/https`, non raggiungono la rete locale (anche tramite redirect) e hanno limiti di dimensione.
-- I **comandi del terminale** ricevono un ambiente senza `HASS_TOKEN`, `MCP_API_KEY`, `GOOGLE_*` e senza altre variabili con token o password.
+- I **comandi del terminale** girano in una sandbox (vedi sotto) e ricevono un ambiente senza `HASS_TOKEN`, `MCP_API_KEY`, `GOOGLE_*` e senza altre variabili con token o password.
 - La **calcolatrice** non usa `eval` e limita le espressioni troppo costose.
 
-### Cosa NON è confinato
-`terminale_esegui` ed `esegui_python` eseguono comandi veri con i permessi del processo del server: il parametro `cartella` decide solo da dove partono. Il vero confine è dato dal sistema operativo. Per questo:
+### Il terminale gira in una sandbox
+`terminale_esegui`, `esegui_python` e i processi in background eseguono comandi veri. Per impedire che l'agente esca dal workspace, ogni comando gira in una sandbox [bubblewrap](https://github.com/containers/bubblewrap), dove esistono solo:
+- la **cartella di lavoro**, in lettura e scrittura: il workspace oppure, con `id_conversazione`, solo la cartella della conversazione;
+- **in sola lettura**: i programmi di sistema (`/usr`), `/etc` (senza `/etc/mcp-server`) e l'interprete Python del server con le sue librerie;
+- una `/tmp` e una home temporanee, cancellate a fine comando.
 
+Il resto del server non esiste per i comandi: `/mnt`, `/opt` (codice, `.env`, venv esclusi i file Python), `data/` fuori dal workspace, le altre cartelle delle conversazioni. La rete resta disponibile per `git clone`, `pip` e `curl`.
+
+Verifica che la sandbox funzioni nel container, con lo stesso utente del servizio:
+
+```bash
+runuser -u mcp -- bwrap --unshare-all --share-net --ro-bind / / --dev /dev --proc /proc true && echo "sandbox OK"
+```
+
+All'avvio il log dice se è attiva: `Terminale in sandbox (bubblewrap)`. Se invece compare `Terminale SENZA sandbox`:
+- installa bubblewrap: `apt install -y bubblewrap`;
+- se è installato ma non parte, in Proxmox abilita per il container **Opzioni → Funzionalità → Nesting** e riavvia il container.
+
+Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il terminale funziona lo stesso, senza confinamento. Per avere la certezza del confinamento, metti `TERMINAL_SANDBOX=obbligatoria` nelle [variabili fisse](#variabili-fisse): senza sandbox, terminale ed `esegui_python` si rifiutano di eseguire comandi.
+
+### Altre protezioni
 1. **Container LXC unprivileged.** Si controlla sull'host Proxmox con `pct config <ID> | grep unprivileged`.
-2. **Utente dedicato, non root.** Così il codice del server non è modificabile e i segreti, nel file delle [variabili fisse](#variabili-fisse) (`/etc/mcp-server/mcp-server.env`, permessi 600), non sono leggibili dall'agente:
+2. **Utente dedicato, non root.** Così il codice del server non è modificabile e i segreti, nel file delle [variabili fisse](#variabili-fisse) (`/etc/mcp-server/mcp-server.env`, permessi 600), non sono leggibili:
    ```bash
    useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=-/etc/mcp-server/mcp-server.env`, che systemd legge come root.
-3. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
-4. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
-5. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
+3. **Dischi montati nascosti.** Il servizio nasconde `/mnt`, `/media` e `/srv` all'intero processo del server, sandbox o no (`TemporaryFileSystem=`). Se tieni `DATA_DIR` su un disco montato lì, togli quella cartella dalla riga nel servizio.
+4. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
+5. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
+6. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
 
 ---
 
@@ -662,7 +682,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 209 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, confinamento, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 218 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
@@ -698,6 +718,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 | OpenWebUI non riesce a usare gli strumenti (errori di sessione o di connessione) | Imposta `ENABLE_ELICITATION=false` per tornare alla modalità senza sessione |
 | Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google nelle [variabili fisse](#variabili-fisse), oppure il servizio installato non è aggiornato (deve contenere `EnvironmentFile=-/etc/mcp-server/mcp-server.env`): controlla la riga `Tool attivi` nel log e la verifica della sezione Variabili fisse |
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
+| Nel log: `Terminale SENZA sandbox` | Installa `bubblewrap`; se non basta, in Proxmox abilita Opzioni → Funzionalità → Nesting per il container (vedi [Sicurezza](#sicurezza)) |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
 | `PermissionError: [Errno 13] Permission denied: '/opt/mcp-server/data/...'` | Alcuni file di `data/` appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /opt/mcp-server/data` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |
 | Nel log: `Executable doesn't exist at /opt/ms-playwright/...` | Playwright è stato aggiornato ma il suo browser no: esegui `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install chromium` e riavvia il servizio (passo 3 di [Aggiornamento](#aggiornamento)) |

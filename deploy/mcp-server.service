@@ -29,6 +29,9 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=/opt/mcp-server/data /home/mcp
 PrivateTmp=yes
+# Dischi esterni e cartelle condivise invisibili al server e ai comandi dell'agente.
+# Se DATA_DIR sta in una di queste cartelle, toglila da questa riga.
+TemporaryFileSystem=/mnt:ro /media:ro /srv:ro
 
 [Install]
 WantedBy=multi-user.target

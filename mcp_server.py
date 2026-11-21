@@ -34,6 +34,7 @@ Configurazione (variabili d'ambiente, oppure file ".env" accanto allo script)
     TIMEZONE=Europe/Rome
     DISABLED_TOOLS=                  # elenco separato da virgole di tool da nascondere
     ENABLE_TERMINAL=true  ENABLE_MUSIC=true  ENABLE_HASS=true  ENABLE_CALENDAR=true
+    TERMINAL_SANDBOX=auto            # auto | obbligatoria | disattivata (sandbox bubblewrap per il terminale)
 
   Web
     WEB_ALLOW_PRIVATE_URLS=false     # true = permette di leggere URL della rete locale (rischio SSRF)
@@ -291,6 +292,10 @@ MUSIC_START_TIMEOUT = _env_int("MUSIC_START_TIMEOUT", 45)
 
 # --- Terminale ---
 TERMINAL_MAX_OUTPUT = _env_int("TERMINAL_MAX_OUTPUT", 12000)
+# Sandbox (bubblewrap) per terminale ed esegui_python: i comandi vedono solo la cartella di lavoro e i programmi
+# di sistema. "auto" = usala se disponibile, "obbligatoria" = senza sandbox il terminale non funziona,
+# "disattivata" = comandi eseguiti direttamente (vedono tutto cio' che vede l'utente del servizio).
+TERMINAL_SANDBOX = _env("TERMINAL_SANDBOX", "auto").lower()
 # Lettura documenti: OCR (tesseract) per PDF scansionati e immagini, LibreOffice per i vecchi formati Office
 OCR_LINGUE = _env("OCR_LINGUE", "ita+eng")
 OCR_MAX_PAGINE = _env_int("OCR_MAX_PAGINE", 30)
@@ -2405,11 +2410,12 @@ class GestoreProcessi:
         if len(attivi) >= 10:
             raise UserError("Troppi processi in background (max 10): terminane qualcuno.")
         jid = secrets.token_hex(3)
+        argomenti = comando_da_eseguire(comando, cwd, base)
         self.cartella.mkdir(parents=True, exist_ok=True)
         log = self.cartella / f"{jid}.log"
         fh = open(log, "wb")
         proc = await asyncio.create_subprocess_exec(
-            "bash", "-c", comando, cwd=str(cwd), stdout=fh, stderr=subprocess.STDOUT,
+            *argomenti, cwd=str(cwd), stdout=fh, stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL, env=env_sicuro(base), start_new_session=True,
         )
         fh.close()
@@ -2446,11 +2452,67 @@ class GestoreProcessi:
 PROCESSI = GestoreProcessi()
 
 
+@functools.lru_cache(maxsize=1)
+def sandbox_disponibile() -> tuple[bool, str]:
+    """(disponibile, motivo): verifica una volta sola che bubblewrap funzioni in questo sistema."""
+    if TERMINAL_SANDBOX in ("disattivata", "off", "false", "no", "0"):
+        return False, "disattivata con TERMINAL_SANDBOX"
+    bwrap = shutil.which("bwrap")
+    if not bwrap:
+        return False, "bubblewrap non installato (apt install -y bubblewrap)"
+    try:
+        r = subprocess.run([bwrap, "--unshare-all", "--share-net", "--ro-bind", "/", "/", "--dev", "/dev",
+                            "--proc", "/proc", "true"], capture_output=True, text=True, timeout=15)
+    except Exception as e:
+        return False, f"bubblewrap non avviabile: {e}"
+    if r.returncode != 0:
+        return False, (f"bubblewrap non utilizzabile ({r.stderr.strip()[:200]}). In un container LXC di Proxmox "
+                       f"abilita Opzioni > Funzionalita' > Nesting e riavvia il container")
+    return True, ""
+
+
+def argomenti_sandbox(base: Path, cwd: Path) -> list[str]:
+    """
+    Comando bwrap: il processo vede solo la cartella di lavoro (lettura/scrittura) e, in sola lettura,
+    i programmi di sistema, /etc e l'interprete Python del server. /tmp e la home sono temporanee;
+    la rete resta disponibile (git clone, pip, curl).
+    """
+    a = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--share-net",
+         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home",
+         "--ro-bind", "/usr", "/usr"]
+    for d in ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"):
+        if os.path.islink(d):
+            a += ["--symlink", os.readlink(d), d]
+        elif os.path.isdir(d):
+            a += ["--ro-bind", d, d]
+    a += ["--ro-bind", "/etc", "/etc"]
+    if os.path.isdir("/etc/mcp-server"):
+        a += ["--tmpfs", "/etc/mcp-server"]  # configurazione personale del server: nascosta
+    resolv = os.path.realpath("/etc/resolv.conf")
+    if not resolv.startswith("/etc/") and os.path.exists(resolv):
+        a += ["--ro-bind", os.path.dirname(resolv), os.path.dirname(resolv)]  # DNS (es. systemd-resolved)
+    for d in sorted({sys.prefix, sys.base_prefix, str(Path(sys.executable).resolve().parent.parent)}):
+        if d and not d.startswith("/usr") and os.path.isdir(d):
+            a += ["--ro-bind", d, d]  # interprete Python e librerie del server (venv)
+    a += ["--bind", str(base), str(base), "--chdir", str(cwd)]
+    return a
+
+
+def comando_da_eseguire(comando: str, cwd: Path, base: Optional[Path]) -> list[str]:
+    """Argomenti del processo: dentro la sandbox se disponibile, secondo TERMINAL_SANDBOX."""
+    disponibile, motivo = sandbox_disponibile()
+    if disponibile:
+        return argomenti_sandbox(base or WORKSPACE_DIR, cwd) + ["bash", "-c", comando]
+    if TERMINAL_SANDBOX in ("obbligatoria", "required", "si", "sì"):
+        raise UserError(f"Il terminale richiede la sandbox (TERMINAL_SANDBOX=obbligatoria), non disponibile: {motivo}")
+    return ["bash", "-c", comando]
+
+
 async def esegui_comando(comando: str, cwd: Path, timeout: int,
                          base: Optional[Path] = None) -> tuple[int, str, float]:
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        "bash", "-c", comando, cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        *comando_da_eseguire(comando, cwd, base), cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         stdin=subprocess.DEVNULL, env=env_sicuro(base), start_new_session=True,
     )
     try:
@@ -2473,7 +2535,8 @@ async def esegui_comando(comando: str, cwd: Path, timeout: int,
         "grep, curl, compilazioni, test). Ogni chiamata parte da 'cartella' (relativa al workspace): "
         "per comandi in sequenza usa '&&'. Restituisce codice di uscita e output (stdout+stderr). "
         "Per server o comandi molto lunghi usa in_background=true e poi terminale_processi. "
-        "Non usare comandi interattivi (usa flag come -y)."
+        "Non usare comandi interattivi (usa flag come -y). I comandi girano in una sandbox: vedono solo la "
+        "cartella di lavoro e i programmi di sistema, non il resto del server."
         " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     group="terminal",
@@ -2543,7 +2606,7 @@ async def terminale_processi(azione: Literal["lista", "output", "termina"] = "li
 )
 async def esegui_python(codice: str, timeout_secondi: int = 60, id_conversazione: IdConversazione = None) -> str:
     base = cartella_lavoro(id_conversazione)
-    tmpdir = WORKSPACE_DIR / ".tmp"
+    tmpdir = base / ".tmp"
     tmpdir.mkdir(exist_ok=True)
     script = tmpdir / f"snippet_{secrets.token_hex(4)}.py"
     script.write_text(codice, encoding="utf-8")
@@ -4872,6 +4935,15 @@ async def avvio() -> None:
     TIMER.avvia()
     if FEATURES["music"]:
         LETTORE.avvia_monitor()
+    if FEATURES["terminal"]:
+        disponibile, motivo = await asyncio.to_thread(sandbox_disponibile)
+        if disponibile:
+            logger.info("Terminale in sandbox (bubblewrap): i comandi vedono solo la cartella di lavoro.")
+        elif TERMINAL_SANDBOX in ("obbligatoria", "required", "si", "sì"):
+            logger.error(f"Sandbox del terminale non disponibile ({motivo}): terminale ed esegui_python disattivati.")
+        else:
+            logger.warning(f"Terminale SENZA sandbox: i comandi possono leggere tutto cio' che legge l'utente del "
+                           f"servizio. Motivo: {motivo}")
     logger.info(f"Tool attivi ({len(REGISTERED_TOOLS)}): {', '.join(REGISTERED_TOOLS)}")
 
 
