@@ -6,6 +6,25 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-24 · Struttura a moduli, link ai file, GitHub
+
+### Attività svolte
+- ✅ **Codice diviso in moduli**: `mcp_server.py` (punto di ingresso, ~240 righe), `nucleo/` (configurazione, server e decoratore dei tool, utilità, rete, browser, workspace, sandbox, conferme degli invii, link ai file) e `tools/` con un file dal nome parlante per ogni gruppo di strumenti, ciascuno con le proprie costanti. Comportamento invariato: stessi 218 test superati prima delle novità
+- ✅ **Immagini e file visibili nella chat**: il server pubblica i file del workspace su `/file/<token>/<nome>` con link firmati (HMAC) e a scadenza (`LINK_FILE_GIORNI`), senza chiave API. `screenshot_pagina`, `vedi_immagine` e `scarica_file` restituiscono il markdown con il link; nuovo strumento `link_file`; istruzioni al modello di non usare mai percorsi locali come link. L'indirizzo del server nei link è quello della richiesta del client, senza configurazione; `MCP_URL_PUBBLICO` è solo un'alternativa facoltativa
+- ✅ **GitHub**: `github_clona`, `github_stato`, `github_commit`, `github_push`, `github_crea_pull_request`, solo sui repository in `GITHUB_REPO_AUTORIZZATI`. Token mai salvato su disco né visibile ai comandi dell'agente; commit nella sandbox; push e pull request con conferma obbligatoria e codice legato al commit; controllo della configurazione git prima del push (hook, proxy, fsmonitor, include, remote non autorizzati bloccano il push); niente push forzato
+- ✅ 28 nuovi test, con repository GitHub finti (`file://`) e API simulate (**245/245 superati**)
+
+### Decisioni prese
+- Le parti condivise stanno in `nucleo/`, gli strumenti in `tools/`; per aggiungere uno strumento basta un modulo in `tools/` registrato in `tools/__init__.py`
+- I link ai file sono capability firmate invece che protetti dalla chiave API, perché il browser non può inviarla con un tag `<img>`
+- Il push usa il token solo dalla riga di comando del server, dopo aver verificato la configurazione del repository: l'agente non può usarlo per altro
+
+### Da verificare
+- ⏳ Link ai file visualizzati in OpenWebUI (il browser deve raggiungere l'indirizzo con cui OpenWebUI si collega al server)
+- ⏳ Clone, push e pull request su GitHub reale con un token fine-grained
+
+---
+
 ## 2026-11-21 · Sandbox del terminale
 
 ### Problema

@@ -23,6 +23,8 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Email e WhatsApp](#email-e-whatsapp)
 - [Cartelle per conversazione](#cartelle-per-conversazione)
 - [Leggere documenti](#leggere-documenti)
+- [Mostrare i file nella chat](#mostrare-i-file-nella-chat)
+- [GitHub](#github)
 - [Timer e sveglie](#timer-e-sveglie)
 - [Google Calendar](#google-calendar)
 - [Sicurezza](#sicurezza)
@@ -34,7 +36,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 
 ## Strumenti disponibili
 
-Il server espone **46 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google, email e WhatsApp solo se configurati. Puoi nasconderne altri con `DISABLED_TOOLS`.
+Il server espone **52 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google, email, WhatsApp e GitHub solo se configurati. Puoi nasconderne altri con `DISABLED_TOOLS`.
 
 ### Generali
 | Tool | Cosa fa |
@@ -65,6 +67,7 @@ Il server espone **46 tool**, divisi in gruppi. Un gruppo non configurato viene 
 | `esegui_python` | Esegue codice Python con l'interprete del server |
 | `file_leggi` | Legge file di testo e codice con numeri di riga, ed estrae il testo dai documenti: PDF (anche scansionati, con OCR), Word, Excel, PowerPoint, LibreOffice, RTF, EPUB, email, immagini e archivi (vedi [Leggere documenti](#leggere-documenti)) |
 | `file_scrivi` / `file_modifica` | Scrittura e modifica tramite sostituzione esatta di testo |
+| `link_file` | Link per mostrare nella chat o scaricare un file del workspace (vedi [Mostrare i file nella chat](#mostrare-i-file-nella-chat)) |
 | `file_elenca` / `file_cerca` | Elenco con glob e ricerca regex nei file (come `grep -rn`) |
 
 ### Home Assistant
@@ -85,6 +88,15 @@ Il server espone **46 tool**, divisi in gruppi. Un gruppo non configurato viene 
 | `musica_controlla` | Pausa, riprendi, stop, successivo, precedente, volume, attiva o disattiva la radio |
 | `musica_aggiungi_in_coda` / `musica_stato` | Aggiunge un brano come prossimo; mostra cosa sta suonando e la coda |
 | `calendario_eventi` / `calendario_crea_evento` / `calendario_modifica_evento` / `calendario_elimina_evento` / `calendario_lista` | Google Calendar completo |
+
+### GitHub
+| Tool | Cosa fa |
+|---|---|
+| `github_clona` | Clona nel workspace un repository autorizzato |
+| `github_stato` | Ramo, file modificati, ultimi commit e commit da inviare |
+| `github_commit` | Crea un commit locale (tutte le modifiche o solo i file indicati) |
+| `github_push` | Invia i commit a GitHub, **sempre con conferma** |
+| `github_crea_pull_request` | Apre una pull request, **sempre con conferma** |
 
 ### Rubrica, email e WhatsApp
 | Tool | Cosa fa |
@@ -358,6 +370,16 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 | `OPENWA_URL` / `OPENWA_API_KEY` / `OPENWA_SESSION_ID` | – | Indirizzo, chiave e ID della sessione del gateway OpenWA. Senza URL e ID della sessione, lo strumento WhatsApp è nascosto |
 | `WHATSAPP_PREFISSO` | `39` | Prefisso aggiunto ai numeri scritti senza `+` |
 
+### Link ai file e GitHub
+| Variabile | Default | Descrizione |
+|---|---|---|
+| `MCP_URL_PUBBLICO` | indirizzo della richiesta | Facoltativo. Indirizzo del server nei link ai file: di norma è quello con cui il client raggiunge il server; impostalo solo se il browser non raggiunge quell'indirizzo (es. `http://192.168.1.11:8000`) |
+| `LINK_FILE_GIORNI` | `30` | Validità dei link ai file |
+| `LINK_FILE_SEGRETO` | casuale | Chiave di firma dei link; se non impostata viene generata e salvata in `data/.chiave_link_file` |
+| `GITHUB_TOKEN` | – | Token GitHub (fine-grained, limitato ai repository autorizzati). Senza, gli strumenti GitHub sono nascosti |
+| `GITHUB_REPO_AUTORIZZATI` | – | Repository utilizzabili, separati da virgola: `utente/progetto`, anche con `*` (`utente/*`) |
+| `GITHUB_AUTORE_NOME` / `GITHUB_AUTORE_EMAIL` | `Assistente MCP` / `assistente-mcp@users.noreply.github.com` | Autore dei commit |
+
 ### Google Calendar
 | Variabile | Descrizione |
 |---|---|
@@ -598,6 +620,59 @@ Se manca un programma facoltativo, lo strumento non va in errore: risponde con i
 
 ---
 
+## Mostrare i file nella chat
+
+Un client come OpenWebUI mostra le immagini nel browser dell'utente, quindi non può aprire un percorso del server (`screenshot/pagina.png`). Il server pubblica allora i file del workspace con **link firmati**:
+
+```
+http://IP_DEL_SERVER:8000/file/<token>/nome.png
+```
+
+- Il token contiene il percorso e la scadenza (`LINK_FILE_GIORNI`, 30 giorni) ed è firmato: non si può modificare per leggere altri file, e funziona solo per file del workspace.
+- I link non richiedono la chiave API, perché un tag `<img>` non può inviarla. Tutte le altre rotte la richiedono ancora.
+- `screenshot_pagina`, `vedi_immagine` (per i file locali) e `scarica_file` restituiscono già il markdown pronto (`![...](link)` per le immagini, `[...](link)` per gli altri file). Per qualsiasi altro file, per esempio un grafico creato con `esegui_python`, l'agente usa `link_file`.
+- Le immagini si aprono nel browser, gli altri file vengono scaricati.
+
+Non serve configurare nulla: per i link il server usa l'indirizzo con cui il client lo ha raggiunto (quello inserito in OpenWebUI, es. `http://192.168.1.11:8000/`). Il browser deve poter raggiungere lo stesso indirizzo, e in una rete locale di solito è così.
+
+Se OpenWebUI raggiunge il server con un indirizzo che il browser non conosce, per esempio un nome interno di Docker come `http://mcp-server:8000`, indica nelle [variabili fisse](#variabili-fisse) l'indirizzo per il browser:
+
+```
+MCP_URL_PUBBLICO=http://192.168.1.11:8000
+```
+
+---
+
+## GitHub
+
+L'agente può clonare un repository, modificarlo, fare commit e push, e aprire pull request, **solo sui repository autorizzati**.
+
+### Configurazione
+1. Crea su GitHub un token **fine-grained** (Settings → Developer settings → Personal access tokens → Fine-grained tokens), limitato ai soli repository che vuoi far usare all'agente, con i permessi **Contents: Read and write** e, per le pull request, **Pull requests: Read and write**.
+2. Nelle [variabili fisse](#variabili-fisse):
+   ```
+   GITHUB_TOKEN=github_pat_...
+   GITHUB_REPO_AUTORIZZATI=tuoutente/progetto,tuoutente/altro-*
+   GITHUB_AUTORE_NOME=Assistente di casa
+   ```
+   Serve anche `git` sul server (già incluso nei pacchetti di installazione).
+
+### Flusso
+1. `github_clona(repo="tuoutente/progetto")`: il repository finisce nel workspace (o nella cartella della conversazione).
+2. L'agente modifica i file con `file_scrivi`, `file_modifica` o il terminale.
+3. `github_commit(cartella="progetto", messaggio="...")`: commit locale, nella sandbox.
+4. `github_push(cartella="progetto")`: chiede "Faccio il push di 2 commit sul ramo main del repository tuoutente/progetto?". Solo dopo il tuo sì invia i commit, sul ramo corrente o su un ramo nuovo.
+5. Facoltativo: `github_crea_pull_request(repo=..., ramo=..., titolo=...)`, anche questo con conferma.
+
+### Sicurezza
+- **Il token resta nel server.** Non viene salvato nel repository né passato ai comandi dell'agente: il server lo usa solo nella riga di comando di clone e push e nelle chiamate alle API.
+- **Commit e comandi locali** girano nella sandbox del terminale, senza token.
+- **Controllo della configurazione git.** L'agente può modificarla, quindi prima di ogni push il server la verifica: se trova impostazioni che eseguono programmi o reindirizzano le connessioni (`core.fsmonitor`, `http.proxy`, hook, filtri, `include`...), oppure un remote verso un repository non autorizzato, il push viene bloccato.
+- **Conferma legata al commit.** Il codice di conferma vale per il commit preparato: se il repository cambia prima della conferma, il push viene annullato.
+- **Niente push forzato:** non è previsto. Push e pull request finiscono nel registro `data/invii.log`.
+
+---
+
 ## Timer e sveglie
 
 - **Formati:** `timer_imposta(durata="10m")`, `"1h30m"`, `"1 ora e 15 minuti"`, `"mezz'ora"`, `"00:05:00"`; un numero senza unità vale minuti.
@@ -682,11 +757,11 @@ Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il t
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 218 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 245 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
-Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero e OpenWA.
+Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero, OpenWA e GitHub.
 
 ---
 
@@ -694,20 +769,37 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 
 ```
 .
-├── mcp_server.py              # il server (unico file)
+├── mcp_server.py              # punto di ingresso: app HTTP, autenticazione, avvio, riga di comando
+├── nucleo/                    # servizi comuni
+│   ├── configurazione.py      # variabili d'ambiente, cartelle dati, logging
+│   ├── server.py              # server MCP, decoratore dei tool, gestione degli errori
+│   ├── utilita.py             # date e durate in italiano, formattazione, archivio JSON
+│   ├── rete.py                # download sicuri e controllo degli URL (anti-SSRF)
+│   ├── browser.py             # Chromium condiviso dai tool web
+│   ├── workspace.py           # cartelle di lavoro e percorsi confinati
+│   ├── sandbox.py             # esecuzione dei comandi in bubblewrap
+│   ├── invii.py               # conferme obbligatorie, allegati, registro degli invii
+│   └── link_file.py           # link firmati per mostrare i file nella chat
+├── tools/                     # un modulo per gruppo di strumenti, con le proprie costanti
+│   ├── data_ora.py  calcolatrice.py  meteo.py  valute.py  memoria.py  domande_utente.py
+│   ├── ricerca_web.py  pagine_web.py  immagini.py
+│   ├── terminale.py  file_workspace.py  lettura_documenti.py  condivisione_file.py
+│   ├── rubrica.py  email_smtp.py  whatsapp.py  github.py
+│   ├── home_assistant.py  timer.py  musica.py  calendario_google.py
+│   └── __init__.py            # ordine di registrazione degli strumenti
 ├── requirements.txt
-├── .env.example               # configurazione di esempio
+├── .env.example               # impostazioni generali (copiate nel .env a ogni aggiornamento)
 ├── deploy/
 │   └── mcp-server.service     # unit systemd
 ├── tests/
 │   ├── run_tests.py           # test end-to-end
-│   ├── mocks.py               # Home Assistant e sito web finti
+│   ├── mocks.py               # Home Assistant, sito web, API e gateway finti
 │   └── documenti.py           # documenti di prova (Word, Excel, PowerPoint, PDF, ...)
 └── docs/
     └── MILESTONES.md          # attività svolte e prossimi passi
 ```
 
----
+Per aggiungere uno strumento: crea un modulo in `tools/` con le sue costanti (lette con `_env` da `nucleo.configurazione`), decora le funzioni con `@tool(...)` da `nucleo.server` e aggiungi il modulo a `tools/__init__.py`.
 
 ## Problemi comuni
 

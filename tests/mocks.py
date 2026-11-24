@@ -252,10 +252,28 @@ async def openwa(req):
     return JSONResponse({"messageId": f"msg{len(WA)}", "timestamp": 1}, 201)
 
 
+GITHUB_PR = []  # pull request ricevute dalle API GitHub finte
+
+
+async def gh_repo(req):
+    if req.headers.get("authorization") != "Bearer gh-test-token":
+        return JSONResponse({"message": "Bad credentials"}, 401)
+    return JSONResponse({"full_name": f"{req.path_params['o']}/{req.path_params['r']}", "default_branch": "main"})
+
+
+async def gh_pulls(req):
+    if req.headers.get("authorization") != "Bearer gh-test-token":
+        return JSONResponse({"message": "Bad credentials"}, 401)
+    corpo = await req.json()
+    GITHUB_PR.append((req.path_params["o"], req.path_params["r"], corpo))
+    return JSONResponse({"number": 7, "html_url": f"https://github.com/{req.path_params['o']}/{req.path_params['r']}/pull/7"}, 201)
+
+
 web_app = Starlette(routes=[
     Route("/articolo", articolo), Route("/img/pasta.png", img), Route("/doc.pdf", pdf), Route("/file.bin", big),
     Route("/redirect-locale", redirect_locale), Route("/geo", geo), Route("/forecast", forecast),
     Route("/rss", news), Route("/fx/latest", fx),
+    Route("/repos/{o}/{r}", gh_repo), Route("/repos/{o}/{r}/pulls", gh_pulls, methods=["POST"]),
     Route("/api/sessions/{sid}/messages/send-text", openwa, methods=["POST"]),
     Route("/api/sessions/{sid}/messages/send-image", openwa, methods=["POST"]),
 ])

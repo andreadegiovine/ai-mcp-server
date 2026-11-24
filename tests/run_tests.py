@@ -21,26 +21,53 @@ os.environ.update({
     "HASS_CONFIRM_ENTITIES": "switch.caldaia", "HASS_BLOCKED_ENTITIES": "camera.*",
     "SMTP_HOST": "smtp.test", "SMTP_USER": "bot@test.it", "SMTP_PASSWORD": "pw",
     "OPENWA_URL": "http://127.0.0.1:18080", "OPENWA_API_KEY": "owa-key", "OPENWA_SESSION_ID": "3f6c1a2e-sessione",
+    "GITHUB_TOKEN": "gh-test-token", "GITHUB_REPO_AUTORIZZATI": "andrea/progetto,andrea/altro-*",
+    "GITHUB_URL": f"file://{S}/remoti", "GITHUB_API": "http://127.0.0.1:18080",
 })
 os.environ.pop("HTTPS_PROXY", None); os.environ.pop("https_proxy", None)
 sys.path.insert(0, str(Path(__file__).parent))
 import mocks  # noqa
 import uvicorn
 
+sys.path.insert(0, str(ROOT))
 spec = importlib.util.spec_from_file_location("srv", ROOT / "mcp_server.py")
 srv = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv)
+import smtplib  # noqa: E402
+import nucleo.browser as n_browser  # noqa: E402
+import nucleo.configurazione as n_cfg  # noqa: E402
+import nucleo.rete as n_rete  # noqa: E402
+import nucleo.sandbox as n_sandbox  # noqa: E402
+import nucleo.server as n_server  # noqa: E402
+import nucleo.utilita as n_util  # noqa: E402
+import tools.calendario_google as t_cal  # noqa: E402
+import tools.email_smtp as t_email  # noqa: E402
+import tools.immagini as t_img  # noqa: E402
+import tools.meteo as t_meteo  # noqa: E402
+import tools.musica as t_musica  # noqa: E402
+import tools.ricerca_web as t_ricerca  # noqa: E402
+import tools.valute as t_valute  # noqa: E402
+import tools.whatsapp as t_wa  # noqa: E402
+import nucleo.link_file as n_link  # noqa: E402
+
+
+def patch_ovunque(nome, valore):
+    """Sostituisce una funzione o costante in tutti i moduli del server che la importano."""
+    for m in list(sys.modules.values()):
+        if getattr(m, "__name__", "").split(".")[0] in ("nucleo", "tools", "srv") and hasattr(m, nome):
+            setattr(m, nome, valore)
+
 
 # --- reindirizza le API esterne ai mock ---
 W = "http://127.0.0.1:18080"
-srv.OPEN_METEO_URL = W + "/forecast"; srv.OPEN_METEO_GEO_URL = W + "/geo"
-srv.GOOGLE_NEWS_RSS = W + "/rss"; srv.FRANKFURTER_URLS = ["http://127.0.0.1:1/nope", W + "/fx"]
+t_meteo.OPEN_METEO_URL = W + "/forecast"; t_meteo.OPEN_METEO_GEO_URL = W + "/geo"
+t_ricerca.GOOGLE_NEWS_RSS = W + "/rss"; t_valute.FRANKFURTER_URLS = ["http://127.0.0.1:1/nope", W + "/fx"]
 # Per i test web locali permettiamo gli URL privati solo per 127.0.0.1:18080 (via funzione)
-_orig = srv.url_consentito
+_orig = n_rete.url_consentito
 def url_test(url):
     if url.startswith(W):
         return True, ""
     return _orig(url)
-srv.url_consentito = url_test
+patch_ovunque("url_consentito", url_test)
 
 # --- YouTube finto: brani = file wav locali ---
 WAV = S / "wav"; WAV.mkdir(exist_ok=True)
@@ -48,13 +75,13 @@ for vid in ["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC", "DDDDDDDDDDD", "EEEEEEE
     mocks.crea_wav(WAV / f"{vid}.wav", 8)
 class FakeYT:
     def cerca(self, q, n=5):
-        return [srv.Brano("AAAAAAAAAAA", "Bohemian Rhapsody", "Queen", "5:55"), srv.Brano("ZZZZZZZZZZZ", "Altro", "X")]
+        return [t_musica.Brano("AAAAAAAAAAA", "Bohemian Rhapsody", "Queen", "5:55"), t_musica.Brano("ZZZZZZZZZZZ", "Altro", "X")]
     def simili(self, vid, n=30):
-        return [srv.Brano(v, f"Simile {v[0]}", "Artista") for v in ["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC", "DDDDDDDDDDD"]]
+        return [t_musica.Brano(v, f"Simile {v[0]}", "Artista") for v in ["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC", "DDDDDDDDDDD"]]
     def stream(self, vid):
         return {"url": f"http://cdn.example/{vid}.m4a", "titolo": vid, "thumb": ""}
-srv.LETTORE.yt = FakeYT()
-srv.Brano.url = property(lambda self: str(WAV / f"{self.video_id}.wav"))
+t_musica.LETTORE.yt = FakeYT()
+t_musica.Brano.url = property(lambda self: str(WAV / f"{self.video_id}.wav"))
 
 # --- SMTP finto ---
 SMTP_LOG = []
@@ -65,7 +92,7 @@ class FakeSMTP:
         SMTP_LOG.append(("starttls",))
     def login(self, utente, password):
         if password != "pw":
-            raise srv.smtplib.SMTPAuthenticationError(535, b"bad credentials")
+            raise smtplib.SMTPAuthenticationError(535, b"bad credentials")
         SMTP_LOG.append(("login", utente))
     def send_message(self, msg):
         SMTP_LOG.append(("send", msg))
@@ -73,7 +100,7 @@ class FakeSMTP:
         return self
     def __exit__(self, *a):
         return False
-srv.smtplib.SMTP = FakeSMTP
+smtplib.SMTP = FakeSMTP
 
 import re as re_t
 def codice(t):
@@ -99,7 +126,29 @@ async def serve(app, port):
         await asyncio.sleep(0.05)
     return s, t
 
+def crea_remoti():
+    """Repository 'GitHub' finti: bare repo locali raggiungibili con file:// (GITHUB_URL)."""
+    import subprocess as sp
+    for nome in ("andrea/progetto", "andrea/segreto"):
+        bare = S / "remoti" / f"{nome}.git"
+        sp.run(["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+        lavoro = S / "seme" / nome
+        sp.run(["git", "init", "-q", "-b", "main", str(lavoro)], check=True)
+        (lavoro / "README.md").write_text(f"# {nome}\n")
+        sp.run(["git", "-C", str(lavoro), "add", "-A"], check=True)
+        sp.run(["git", "-C", str(lavoro), "-c", "user.name=Seme", "-c", "user.email=s@e", "commit", "-q", "-m", "Primo"], check=True)
+        sp.run(["git", "-C", str(lavoro), "push", "-q", str(bare), "main"], check=True)
+
+
+def log_remoto(nome, ramo="main"):
+    import subprocess as sp
+    r = sp.run(["git", "--git-dir", str(S / "remoti" / f"{nome}.git"), "log", "--format=%s|%an", ramo],
+               capture_output=True, text=True)
+    return r.stdout.strip().splitlines()
+
+
 async def main():
+    crea_remoti()
     servers = [await serve(mocks.hass_app, 18123), await serve(mocks.web_app, 18080), await serve(srv.crea_app(), 18000)]
     # --- auth ---
     async with httpx.AsyncClient() as c:
@@ -187,11 +236,11 @@ async def main():
             check("email: contatto trovato per nome parziale", "Mando la mail a amministratore condominio all'indirizzo admin@condominio.it?" in t, t)
             t = testo(await call("invia_email", destinatario="io", testo="x", allegati=["/etc/passwd"]))
             check("email: allegati fuori workspace bloccati", "fuori dal workspace" in t, t)
-            srv.SMTP_PASSWORD = "sbagliata"
+            t_email.SMTP_PASSWORD = "sbagliata"
             t = testo(await call("invia_email", destinatario="io", testo="prova"))
             t = testo(await call("invia_email", codice_conferma=codice(t)))
             check("email: credenziali errate -> messaggio chiaro", "password per le app" in t, t)
-            srv.SMTP_PASSWORD = "pw"
+            t_email.SMTP_PASSWORD = "pw"
 
             t = testo(await call("invia_whatsapp", destinatario="io", testo="Ecco le immagini", immagini=[W + "/img/pasta.png"]))
             check("whatsapp: senza numero chiede a quale numero", "A quale numero WhatsApp te lo mando?" in t and "telefono=" in t, t)
@@ -211,15 +260,15 @@ async def main():
                   and b64.b64decode(mocks.WA[1][1]["base64"])[:4] == b"\x89PNG", (t, [x[0] for x in mocks.WA]))
             t = testo(await call("invia_whatsapp", destinatario="+44 7700 900123", testo="ciao"))
             check("whatsapp: numero estero", "al numero +447700900123?" in t, t)
-            srv.OPENWA_SESSION_ID = "sbagliata"
+            t_wa.OPENWA_SESSION_ID = "sbagliata"
             t = testo(await call("invia_whatsapp", destinatario="io", testo="x"))
             t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
             check("whatsapp (OpenWA): sessione inesistente -> messaggio chiaro", "non trova la sessione 'sbagliata'" in t, t)
-            srv.OPENWA_SESSION_ID, srv.OPENWA_API_KEY = "3f6c1a2e-sessione", "chiave-errata"
+            t_wa.OPENWA_SESSION_ID, t_wa.OPENWA_API_KEY = "3f6c1a2e-sessione", "chiave-errata"
             t = testo(await call("invia_whatsapp", destinatario="io", testo="x"))
             t = testo(await call("invia_whatsapp", codice_conferma=codice(t)))
             check("whatsapp (OpenWA): chiave errata -> messaggio chiaro", "OPENWA_API_KEY" in t, t)
-            srv.OPENWA_API_KEY = "owa-key"
+            t_wa.OPENWA_API_KEY = "owa-key"
             check("invii registrati nel log", (DATA / "invii.log").read_text().count("\n") == 2, (DATA / "invii.log").read_text())
 
             # --- web ---
@@ -239,7 +288,7 @@ async def main():
             t = testo(await call("scarica_file", url=W + "/file.bin", percorso_destinazione="../../fuori.bin")); check("scarica_file fuori workspace bloccato", "fuori dal workspace" in t, t)
 
             # immagini: motori esterni non raggiungibili qui -> sostituisco la sorgente DDG con dati locali
-            srv._immagini_ddg = lambda q, n: [{"immagine": W + "/img/pasta.png", "anteprima": W + "/img/pasta.png", "titolo": "Pasta [1]", "pagina": W + "/articolo"},
+            t_img._immagini_ddg = lambda q, n: [{"immagine": W + "/img/pasta.png", "anteprima": W + "/img/pasta.png", "titolo": "Pasta [1]", "pagina": W + "/articolo"},
                                               {"immagine": "http://10.0.0.5/x.png", "anteprima": "", "titolo": "interna", "pagina": ""},
                                               {"immagine": W + "/non-esiste.png", "anteprima": W + "/non-esiste.png", "titolo": "rotta", "pagina": ""}]
             r = await call("cerca_immagini", query="pasta", numero=3)
@@ -248,24 +297,24 @@ async def main():
                   sum(c.type == "image" for c in r.content) == 1 and "![Pasta (1)](" in t and "interna" not in t and "rotta" not in t, t)
             # ricerca web: simulo fallimento Google/DDG -> verifica il ripiego
             async def g_fail(q): raise RuntimeError("captcha")
-            srv._cerca_google = g_fail
-            srv._cerca_ddg = lambda q, n: [{"url": "https://www.google.com/aclk?ad=1", "titolo": "Annuncio", "snippet": ""},
+            t_ricerca._cerca_google = g_fail
+            t_ricerca._cerca_ddg = lambda q, n: [{"url": "https://www.google.com/aclk?ad=1", "titolo": "Annuncio", "snippet": ""},
                                            {"url": "https://example.org/a", "titolo": "Risultato A", "snippet": "desc A"},
                                            {"url": "https://example.org/a#x", "titolo": "Dup", "snippet": ""}]
             t = testo(await call("cerca_online", query="prova"))
             check("cerca_online fallback DDG + filtro annunci/duplicati", "DuckDuckGo" in t and "Risultato A" in t and "Annuncio" not in t and "Dup" not in t, t)
-            check("decodifica redirect Bing", srv._pulisci_url_risultato("https://www.bing.com/ck/a?!&&p=x&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYWdpbmE&ntb=1") == "https://example.com/pagina")
-            check("decodifica redirect Google", srv._pulisci_url_risultato("https://www.google.it/url?q=https://ex.com/p&sa=U") == "https://ex.com/p")
+            check("decodifica redirect Bing", t_ricerca._pulisci_url_risultato("https://www.bing.com/ck/a?!&&p=x&u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS9wYWdpbmE&ntb=1") == "https://example.com/pagina")
+            check("decodifica redirect Google", t_ricerca._pulisci_url_risultato("https://www.google.it/url?q=https://ex.com/p&sa=U") == "https://ex.com/p")
 
             # browser mancante (es. Playwright aggiornato senza 'playwright install') -> messaggio chiaro
-            percorso_ok = srv.CHROMIUM_PATH
-            srv.CHROMIUM_PATH = "/opt/non-esiste/chrome"
+            percorso_ok = n_browser.CHROMIUM_PATH
+            n_browser.CHROMIUM_PATH = "/opt/non-esiste/chrome"
             try:
-                await srv.BrowserManager().contesto()
+                await n_browser.BrowserManager().contesto()
                 errore = ""
-            except srv.UserError as e:
+            except n_server.UserError as e:
                 errore = str(e)
-            srv.CHROMIUM_PATH = percorso_ok
+            n_browser.CHROMIUM_PATH = percorso_ok
             check("browser mancante: messaggio con il comando per installarlo", "playwright install chromium" in errore, errore)
 
             # --- workspace / terminale ---
@@ -328,7 +377,7 @@ async def main():
             check("conv: lista processi filtrata per conversazione", "sleep 2" in t1 and "Nessun processo" in t2, (t1, t2))
 
             # --- sandbox del terminale (bubblewrap) ---
-            if srv.sandbox_disponibile()[0]:
+            if n_sandbox.sandbox_disponibile()[0]:
                 (DATA / "segreto.txt").write_text("PASSWORD-SEGRETA")
                 t = testo(await call("terminale_esegui", comando=f"ls /opt /mnt; cat {DATA}/segreto.txt; find / -name segreto.txt 2>/dev/null; ls"))
                 check("sandbox: niente /opt, /mnt e file fuori dal workspace", "PASSWORD-SEGRETA" not in t and "ls: cannot access '/opt'" in t
@@ -350,19 +399,19 @@ async def main():
                 t = testo(await call("terminale_processi", azione="output", id=jid)); check("sandbox: processo in background terminabile", "terminato" in t, t)
             else:
                 print("   (bubblewrap non disponibile: test della sandbox saltati)")
-            originale_sandbox, originale_modo = srv.sandbox_disponibile, srv.TERMINAL_SANDBOX
-            srv.sandbox_disponibile = lambda: (False, "simulata")
+            originale_sandbox, originale_modo = n_sandbox.sandbox_disponibile, n_sandbox.TERMINAL_SANDBOX
+            n_sandbox.sandbox_disponibile = lambda: (False, "simulata")
             try:
-                srv.TERMINAL_SANDBOX = "obbligatoria"
+                n_sandbox.TERMINAL_SANDBOX = "obbligatoria"
                 t = testo(await call("terminale_esegui", comando="ls /"))
                 check("sandbox obbligatoria non disponibile -> terminale bloccato", "richiede la sandbox" in t, t)
                 t = testo(await call("esegui_python", codice="print(1)"))
                 check("sandbox obbligatoria non disponibile -> python bloccato", "richiede la sandbox" in t, t)
-                srv.TERMINAL_SANDBOX = "auto"
+                n_sandbox.TERMINAL_SANDBOX = "auto"
                 t = testo(await call("terminale_esegui", comando="ls / | grep -c opt"))
                 check("sandbox auto non disponibile -> comando eseguito senza sandbox", "\n1" in t, t)
             finally:
-                srv.sandbox_disponibile, srv.TERMINAL_SANDBOX = originale_sandbox, originale_modo
+                n_sandbox.sandbox_disponibile, n_sandbox.TERMINAL_SANDBOX = originale_sandbox, originale_modo
 
             # --- file_leggi: documenti (Word, Excel, PowerPoint, OpenDocument, PDF, OCR, ...) ---
             import documenti
@@ -410,8 +459,8 @@ async def main():
                 t = testo(await leggi("scritta.png")); check("documenti: immagine con OCR", "FATTURA" in t and "4521" in t, t)
             else:
                 print("   (tesseract non installato: test OCR saltati)")
-            originale_which = srv.shutil.which
-            srv.shutil.which = lambda n, *a, **k: None if n in ("tesseract", "soffice", "libreoffice") else originale_which(n, *a, **k)
+            originale_which = shutil.which
+            shutil.which = lambda n, *a, **k: None if n in ("tesseract", "soffice", "libreoffice") else originale_which(n, *a, **k)
             try:
                 shutil.copy(DATA / "workspace" / "docs" / "scansione.pdf", DATA / "workspace" / "docs" / "scansione2.pdf")
                 t = testo(await leggi("scansione2.pdf"))
@@ -422,7 +471,97 @@ async def main():
                     t = testo(await leggi("relazione2.doc"))
                     check("documenti: senza LibreOffice indica come installarlo", "libreoffice-writer-nogui" in t, t)
             finally:
-                srv.shutil.which = originale_which
+                shutil.which = originale_which
+
+            # --- link firmati ai file del workspace (immagini e documenti visibili nel client) ---
+            r = await call("screenshot_pagina", url=W + "/articolo", id_conversazione="docs")
+            t = testo(r)
+            url_img = t.split("](")[1].split(")")[0] if "](" in t else ""
+            check("link: indirizzo ricavato dalla richiesta, senza configurazione", "![Screenshot di" in t
+                  and url_img.startswith("http://127.0.0.1:18000/file/"), t)
+            async with httpx.AsyncClient() as c:
+                rr = await c.get(url_img)
+                check("link: immagine servita senza chiave API", rr.status_code == 200 and rr.headers["content-type"] == "image/png"
+                      and rr.content[:4] == b"\x89PNG", (rr.status_code, rr.headers))
+                t = testo(await call("link_file", percorso="relazione.docx", id_conversazione="docs"))
+                url_doc = t.split("](")[1].split(")")[0]
+                rr = await c.get(url_doc)
+                check("link: documento scaricabile (link markdown, non immagine)", "[relazione.docx](" in t and "![" not in t
+                      and rr.status_code == 200 and "attachment" in rr.headers.get("content-disposition", ""), (t, rr.headers))
+                manomesso = url_img.replace("/file/", "/file/x", 1)
+                rr = await c.get(manomesso); check("link: token manomesso rifiutato", rr.status_code == 403, rr.status_code)
+                n_link.MCP_URL_PUBBLICO = "http://127.0.0.1:18000"
+                scaduto = n_link.crea_link(DATA / "workspace" / "docs" / "relazione.docx", giorni=-1)
+                n_link.MCP_URL_PUBBLICO = ""
+                rr = await c.get(scaduto); check("link: link scaduto", rr.status_code == 410, rr.status_code)
+                rr = await c.get("http://127.0.0.1:18000/file/qualcosa/../../mcp_server.py")
+                check("link: niente accesso a file fuori dal workspace", rr.status_code in (401, 403, 404), rr.status_code)
+                rr = await c.post("http://127.0.0.1:18000/", json={})
+                check("link: le altre rotte richiedono ancora la chiave", rr.status_code == 401, rr.status_code)
+            r = await call("vedi_immagine", sorgente="scritta.png", id_conversazione="docs")
+            check("link: vedi_immagine su file locale da' un URL http", "](http://127.0.0.1:18000/file/" in testo(r), testo(r))
+            patch_ovunque("MCP_URL_PUBBLICO", "http://192.168.1.11:8000")
+            try:
+                t = testo(await call("link_file", percorso="relazione.docx", id_conversazione="docs"))
+                check("link: MCP_URL_PUBBLICO facoltativo sovrascrive l'indirizzo", "](http://192.168.1.11:8000/file/" in t, t)
+            finally:
+                patch_ovunque("MCP_URL_PUBBLICO", "")
+
+            # --- GitHub (repository finti in file://, API finte) ---
+            gh = lambda nome, **a: call(nome, id_conversazione="gh", **a)  # noqa: E731
+            t = testo(await gh("github_clona", repo="andrea/segreto"))
+            check("github: repository non autorizzato rifiutato", "non e' tra quelli autorizzati" in t, t)
+            t = testo(await gh("github_clona", repo="andrea/progetto"))
+            check("github: clone di un repository autorizzato", "Clonato andrea/progetto in progetto (ramo main)" in t
+                  and (DATA / "workspace" / "gh" / "progetto" / "README.md").exists(), t)
+            sp_out = __import__("subprocess").run(["grep", "-r", "gh-test-token", str(DATA / "workspace" / "gh" / "progetto" / ".git")],
+                                                  capture_output=True, text=True).stdout
+            check("github: il token non viene salvato nel repository", sp_out == "", sp_out)
+            await gh("file_scrivi", percorso="progetto/nuovo.txt", contenuto="ciao\n")
+            t = testo(await gh("github_commit", cartella="progetto", messaggio="Aggiunge nuovo.txt"))
+            check("github: commit locale", "Commit creato" in t and "nuovo.txt" in t, t)
+            t = testo(await gh("github_commit", cartella="progetto", messaggio="Vuoto"))
+            check("github: commit senza modifiche", "Nessuna modifica" in t, t)
+            t = testo(await gh("github_stato", cartella="progetto"))
+            check("github: stato con commit da inviare", "ramo main" in t and "Da inviare" in t and "Aggiunge nuovo.txt" in t, t)
+            t = testo(await gh("github_push", cartella="progetto")); cod = codice(t)
+            check("github: push chiede conferma senza inviare", "Faccio il push di un commit sul ramo main del repository andrea/progetto?" in t
+                  and cod and log_remoto("andrea/progetto")[0] == "Primo|Seme", t)
+            t = testo(await gh("github_push", codice_conferma=cod))
+            check("github: push dopo la conferma", "Push completato su andrea/progetto, ramo main" in t
+                  and log_remoto("andrea/progetto")[0] == "Aggiunge nuovo.txt|Assistente MCP", (t, log_remoto("andrea/progetto")))
+            t = testo(await gh("github_push", codice_conferma=cod)); check("github: codice non riutilizzabile", "non valido" in t, t)
+            await gh("file_scrivi", percorso="progetto/a.txt", contenuto="a\n")
+            await gh("github_commit", cartella="progetto", messaggio="Commit A")
+            t = testo(await gh("github_push", cartella="progetto")); cod = codice(t)
+            await gh("file_scrivi", percorso="progetto/b.txt", contenuto="b\n")
+            await gh("github_commit", cartella="progetto", messaggio="Commit B aggiunto dopo la conferma")
+            t = testo(await gh("github_push", codice_conferma=cod))
+            check("github: repository cambiato dopo la conferma -> push annullato", "cambiato dopo la conferma" in t
+                  and log_remoto("andrea/progetto")[0] == "Aggiunge nuovo.txt|Assistente MCP", t)
+            for chiave, valore in (("core.fsmonitor", "touch /tmp/pwn"), ("http.proxy", "http://attaccante:8080")):
+                await gh("terminale_esegui", comando=f"git config {chiave} '{valore}'", cartella="progetto")
+                t = testo(await gh("github_push", cartella="progetto"))
+                check(f"github: config pericolosa ({chiave}) blocca il push", "Push bloccato per sicurezza" in t and chiave in t, t)
+                await gh("terminale_esegui", comando=f"git config --unset {chiave}", cartella="progetto")
+            await gh("terminale_esegui", comando=f"git remote set-url origin file://{S}/remoti/andrea/segreto.git", cartella="progetto")
+            t = testo(await gh("github_push", cartella="progetto"))
+            check("github: remote verso un repository non autorizzato blocca il push", "non e' tra quelli autorizzati" in t, t)
+            await gh("terminale_esegui", comando=f"git remote set-url origin file://{S}/remoti/andrea/progetto.git", cartella="progetto")
+            await gh("terminale_esegui", comando="git checkout -q -b funzione", cartella="progetto")
+            t = testo(await gh("github_push", cartella="progetto")); cod = codice(t)
+            check("github: push di un nuovo ramo", "Faccio il push del nuovo ramo funzione del repository andrea/progetto?" in t, t)
+            t = testo(await gh("github_push", codice_conferma=cod))
+            check("github: nuovo ramo creato su GitHub", "ramo funzione" in t and log_remoto("andrea/progetto", "funzione")[0].startswith("Commit B"), t)
+            t = testo(await call("github_crea_pull_request", repo="andrea/progetto", ramo="funzione", titolo="Nuova funzione",
+                                 descrizione="Aggiunge a.txt e b.txt")); cod = codice(t)
+            check("github: pull request chiede conferma", "Apro la pull request «Nuova funzione» dal ramo funzione verso main di andrea/progetto?" in t
+                  and cod and not mocks.GITHUB_PR, t)
+            t = testo(await call("github_crea_pull_request", codice_conferma=cod))
+            check("github: pull request aperta con il token", "Pull request #7 aperta" in t and mocks.GITHUB_PR
+                  and mocks.GITHUB_PR[0][2]["head"] == "funzione" and mocks.GITHUB_PR[0][2]["base"] == "main", t)
+            t = testo(await call("github_crea_pull_request", repo="andrea/segreto", ramo="x", titolo="y"))
+            check("github: pull request su repository non autorizzato rifiutata", "non e' tra quelli autorizzati" in t, t)
 
             # --- Home Assistant ---
             t = testo(await call("hass_cerca_entita", testo="temperatura soggiorno"))
@@ -505,7 +644,7 @@ async def main():
 
     # --- Domande con modulo interattivo (elicitation MCP, attiva di default sul server principale) ---
     from mcp import types as mtypes
-    check("elicitation attiva di default", srv.ENABLE_ELICITATION is True)
+    check("elicitation attiva di default", n_cfg.ENABLE_ELICITATION is True)
     risposte = []
     async def risponde(context, params):
         risposte.append(params)
@@ -548,7 +687,11 @@ async def main():
 
     # --- Server con ENABLE_ELICITATION=false (modalita' stateless + JSON, quella originale) ---
     os.environ["ENABLE_ELICITATION"] = "false"
+    salvati = {k: v for k, v in sys.modules.items() if k.split(".")[0] in ("nucleo", "tools")}
+    for k in salvati:
+        del sys.modules[k]  # nuova istanza completa del server con la configurazione diversa
     srv_off = importlib.util.module_from_spec(spec); spec.loader.exec_module(srv_off)
+    sys.modules.update(salvati)
     os.environ.pop("ENABLE_ELICITATION")
     servers.append(await serve(srv_off.crea_app(), 18001))
     async with streamablehttp_client("http://127.0.0.1:18001/", headers=hdr) as (rd, wr, _):
@@ -574,17 +717,17 @@ async def main():
 
     # --- Parsing date/durate (unit test) ---
     from datetime import datetime as D
-    rif = D(2026, 11, 17, 15, 0, tzinfo=srv.TZ)  # martedi
+    rif = D(2026, 11, 17, 15, 0, tzinfo=n_cfg.TZ)  # martedi
     casi = {"domani 9:00": (D(2026, 11, 18, 9, 0), True), "18/11/2026 15:30": (D(2026, 11, 18, 15, 30), True),
             "venerdì alle 20.30": (D(2026, 11, 20, 20, 30), True), "2026-12-24": (D(2026, 12, 24), False),
             "dopodomani": (D(2026, 11, 19), False), "16:45": (D(2026, 11, 17, 16, 45), True),
             "2026-11-20T10:00:00+00:00": (D(2026, 11, 20, 11, 0), True), "prossimo martedì 10": (D(2026, 11, 24, 10, 0), True)}
     for k, (atteso, ha) in casi.items():
-        dt, h = srv.parse_data_ora(k, riferimento=rif)
+        dt, h = n_util.parse_data_ora(k, riferimento=rif)
         check(f"parse_data_ora '{k}'", dt.replace(tzinfo=None) == atteso and h == ha, (dt, h))
     for k, v in {"10m": 600, "1h30m": 5400, "1 ora e 15 minuti": 4500, "90s": 90, "25": 1500, "mezz'ora": 1800,
                  "00:05:00": 300, "2 ore": 7200, "1,5 ore": 5400}.items():
-        check(f"parse_durata '{k}'", srv.parse_durata(k) == v, srv.parse_durata(k))
+        check(f"parse_durata '{k}'", n_util.parse_durata(k) == v, n_util.parse_durata(k))
 
     # --- Calendar (servizio Google simulato) ---
     class Req:
@@ -603,18 +746,18 @@ async def main():
         ev = Events()
         def events(self): return self.ev
         def calendarList(self): return type("C", (), {"list": lambda s: Req({"items": [{"id": "primary", "summary": "Io", "primary": True, "accessRole": "owner"}]})})()
-    srv.CALENDARIO._svc = Svc()
-    t = await srv.calendario_crea_evento(titolo="Dentista", inizio="domani 15:00", durata_minuti=45, luogo="Siracusa", promemoria_minuti=30)
+    t_cal.CALENDARIO._svc = Svc()
+    t = await t_cal.calendario_crea_evento(titolo="Dentista", inizio="domani 15:00", durata_minuti=45, luogo="Siracusa", promemoria_minuti=30)
     check("calendario crea", "Dentista" in t and "15:00–15:45" in t and "Siracusa" in t, t)
     body = Svc.ev.db["ev0"]
     check("calendario promemoria + timezone", body["reminders"]["overrides"][0]["minutes"] == 30 and body["start"]["timeZone"] == "Europe/Rome", body)
-    t = await srv.calendario_crea_evento(titolo="Ferie", inizio="2026-12-24", fine="2026-12-26")
+    t = await t_cal.calendario_crea_evento(titolo="Ferie", inizio="2026-12-24", fine="2026-12-26")
     check("calendario evento giornata intera", "tutto il giorno, 3 giorni" in t, t)
-    t = await srv.calendario_eventi(giorni=60, cerca="dent"); check("calendario eventi + filtro", "Dentista" in t and "Ferie" not in t, t)
-    t = await srv.calendario_modifica_evento(event_id="ev0", inizio="domani 17:00"); check("calendario modifica mantiene durata", "17:00–17:45" in t, t)
-    t = await srv.calendario_elimina_evento(event_id="ev0"); check("calendario elimina chiede conferma", "Chiedi conferma" in t and "ev0" in Svc.ev.db, t)
-    t = await srv.calendario_elimina_evento(event_id="ev0", conferma=True); check("calendario elimina", "eliminato" in t and "ev0" not in Svc.ev.db, t)
-    t = await srv.calendario_lista(); check("calendario lista", "primary" in t, t)
+    t = await t_cal.calendario_eventi(giorni=60, cerca="dent"); check("calendario eventi + filtro", "Dentista" in t and "Ferie" not in t, t)
+    t = await t_cal.calendario_modifica_evento(event_id="ev0", inizio="domani 17:00"); check("calendario modifica mantiene durata", "17:00–17:45" in t, t)
+    t = await t_cal.calendario_elimina_evento(event_id="ev0"); check("calendario elimina chiede conferma", "Chiedi conferma" in t and "ev0" in Svc.ev.db, t)
+    t = await t_cal.calendario_elimina_evento(event_id="ev0", conferma=True); check("calendario elimina", "eliminato" in t and "ev0" not in Svc.ev.db, t)
+    t = await t_cal.calendario_lista(); check("calendario lista", "primary" in t, t)
 
     for sv, task in reversed(servers):
         sv.should_exit = True
