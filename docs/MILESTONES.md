@@ -6,6 +6,22 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-24 · Ambienti di sviluppo per l'agente
+
+### Problema
+L'agente non riusciva a installare Node.js per eseguire dei test: nella sandbox non ha root (apt non funziona, ed è voluto) e la home era temporanea, quindi anche gli strumenti scaricati a mano andavano persi.
+
+### Attività svolte
+- ✅ Home persistente dell'agente: `DATA_DIR/home_agente`, vista come `/home/agente` nella sandbox, con `~/.local/bin`, `~/go/bin` e `~/.cargo/bin` nel PATH e `npm install -g` in `~/.local`; separata dal workspace ed esclusa dal controllo dei permessi all'avvio
+- ✅ Nuovo strumento `ambiente_installa`: Node.js (con npm), Python tramite uv e Go dalle distribuzioni ufficiali, per architettura x86_64 e arm64
+- ✅ Descrizione del terminale aggiornata: niente apt/sudo, come installare senza root
+- ✅ 7 nuovi test con distribuzioni finte servite in locale (**252/252 superati**)
+
+### Da verificare
+- ⏳ Installazione reale da nodejs.org, go.dev e github.com (uv) sul server
+
+---
+
 ## 2026-11-24 · Struttura a moduli, link ai file, GitHub
 
 ### Attività svolte

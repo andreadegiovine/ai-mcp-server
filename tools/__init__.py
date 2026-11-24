@@ -16,6 +16,7 @@ from tools import (
     email_smtp,
     whatsapp,
     terminale,
+    ambienti,
     file_workspace,
     home_assistant,
     timer,
@@ -26,5 +27,6 @@ from tools import (
 )
 
 __all__ = ["data_ora", "calcolatrice", "ricerca_web", "pagine_web", "immagini", "meteo", "valute", "domande_utente",
-           "memoria", "rubrica", "email_smtp", "whatsapp", "terminale", "file_workspace", "home_assistant", "timer",
+           "memoria", "rubrica", "email_smtp", "whatsapp", "terminale", "ambienti", "file_workspace",
+           "home_assistant", "timer",
            "musica", "calendario_google", "github", "condivisione_file"]

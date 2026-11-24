@@ -269,10 +269,21 @@ async def gh_pulls(req):
     return JSONResponse({"number": 7, "html_url": f"https://github.com/{req.path_params['o']}/{req.path_params['r']}/pull/7"}, 201)
 
 
+DIST_DIR = None  # cartella con le distribuzioni finte di Node.js, Go e uv (impostata dai test)
+
+
+async def dist(req):
+    p = DIST_DIR / req.path_params["p"] if DIST_DIR else None
+    if not p or not p.is_file():
+        return Response(status_code=404)
+    return Response(p.read_bytes())
+
+
 web_app = Starlette(routes=[
     Route("/articolo", articolo), Route("/img/pasta.png", img), Route("/doc.pdf", pdf), Route("/file.bin", big),
     Route("/redirect-locale", redirect_locale), Route("/geo", geo), Route("/forecast", forecast),
     Route("/rss", news), Route("/fx/latest", fx),
+    Route("/dist/{p:path}", dist),
     Route("/repos/{o}/{r}", gh_repo), Route("/repos/{o}/{r}/pulls", gh_pulls, methods=["POST"]),
     Route("/api/sessions/{sid}/messages/send-text", openwa, methods=["POST"]),
     Route("/api/sessions/{sid}/messages/send-image", openwa, methods=["POST"]),

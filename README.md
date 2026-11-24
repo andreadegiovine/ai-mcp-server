@@ -24,6 +24,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Cartelle per conversazione](#cartelle-per-conversazione)
 - [Leggere documenti](#leggere-documenti)
 - [Mostrare i file nella chat](#mostrare-i-file-nella-chat)
+- [Ambienti di sviluppo](#ambienti-di-sviluppo)
 - [GitHub](#github)
 - [Timer e sveglie](#timer-e-sveglie)
 - [Google Calendar](#google-calendar)
@@ -36,7 +37,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 
 ## Strumenti disponibili
 
-Il server espone **52 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google, email, WhatsApp e GitHub solo se configurati. Puoi nasconderne altri con `DISABLED_TOOLS`.
+Il server espone **53 tool**, divisi in gruppi. Un gruppo non configurato viene nascosto da solo: i tool di Home Assistant compaiono solo se c'è `HASS_TOKEN`, quelli del calendario solo se ci sono le credenziali Google, email, WhatsApp e GitHub solo se configurati. Puoi nasconderne altri con `DISABLED_TOOLS`.
 
 ### Generali
 | Tool | Cosa fa |
@@ -65,6 +66,7 @@ Il server espone **52 tool**, divisi in gruppi. Un gruppo non configurato viene 
 | `terminale_esegui` | Esegue comandi bash nel workspace (git, pip, script, build…), con timeout ed esecuzione in background |
 | `terminale_processi` | Elenca, legge l'output o termina i processi in background |
 | `esegui_python` | Esegue codice Python con l'interprete del server |
+| `ambiente_installa` | Installa Node.js (con npm), Python (con uv) o Go nella home persistente dell'agente, senza root (vedi [Ambienti di sviluppo](#ambienti-di-sviluppo)) |
 | `file_leggi` | Legge file di testo e codice con numeri di riga, ed estrae il testo dai documenti: PDF (anche scansionati, con OCR), Word, Excel, PowerPoint, LibreOffice, RTF, EPUB, email, immagini e archivi (vedi [Leggere documenti](#leggere-documenti)) |
 | `file_scrivi` / `file_modifica` | Scrittura e modifica tramite sostituzione esatta di testo |
 | `link_file` | Link per mostrare nella chat o scaricare un file del workspace (vedi [Mostrare i file nella chat](#mostrare-i-file-nella-chat)) |
@@ -643,6 +645,23 @@ MCP_URL_PUBBLICO=http://192.168.1.11:8000
 
 ---
 
+## Ambienti di sviluppo
+
+Nella sandbox l'agente non ha permessi di amministratore: `apt` e `sudo` non funzionano, ed è voluto. Per eseguire codice e test può installare gli strumenti **nella propria home persistente**:
+
+- nella sandbox la home è `/home/agente`, sul server `DATA_DIR/home_agente`. Resta tra un comando e l'altro e tra le conversazioni, ed è separata dal workspace;
+- `~/.local/bin`, `~/go/bin` e `~/.cargo/bin` sono nel `PATH`; `npm install -g` installa in `~/.local`;
+- lo strumento **`ambiente_installa`** scarica le versioni ufficiali di:
+  - **Node.js** con npm (`versione`: `lts`, `22`, `20.11.1`, `latest`), da nodejs.org;
+  - **Python** tramite [uv](https://github.com/astral-sh/uv) (`3.12`, `3.13`...), poi `uv venv -p 3.12 .venv` per un ambiente isolato;
+  - **Go** (`1.23`, `latest`), da go.dev.
+
+Esempio: *"clona il repository, installa Node.js 22 ed esegui i test"*. L'agente usa `ambiente_installa(strumento="node", versione="22")`, poi `npm ci && npm test` nel terminale.
+
+Le librerie di sistema (pacchetti `apt` come `libpq-dev` o `ffmpeg`) restano fuori dalla portata dell'agente: se servono, vanno installate dall'amministratore nel container. Il server deve poter raggiungere nodejs.org, go.dev e github.com (per uv e le versioni di Python).
+
+---
+
 ## GitHub
 
 L'agente può clonare un repository, modificarlo, fare commit e push, e aprire pull request, **solo sui repository autorizzati**.
@@ -773,7 +792,7 @@ La cartella dei dati si imposta con `DATA_DIR` nelle [variabili fisse](#variabil
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 245 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 252 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
@@ -799,7 +818,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 ├── tools/                     # un modulo per gruppo di strumenti, con le proprie costanti
 │   ├── data_ora.py  calcolatrice.py  meteo.py  valute.py  memoria.py  domande_utente.py
 │   ├── ricerca_web.py  pagine_web.py  immagini.py
-│   ├── terminale.py  file_workspace.py  lettura_documenti.py  condivisione_file.py
+│   ├── terminale.py  ambienti.py  file_workspace.py  lettura_documenti.py  condivisione_file.py
 │   ├── rubrica.py  email_smtp.py  whatsapp.py  github.py
 │   ├── home_assistant.py  timer.py  musica.py  calendario_google.py
 │   └── __init__.py            # ordine di registrazione degli strumenti

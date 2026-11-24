@@ -48,6 +48,7 @@ import tools.ricerca_web as t_ricerca  # noqa: E402
 import tools.valute as t_valute  # noqa: E402
 import tools.whatsapp as t_wa  # noqa: E402
 import nucleo.link_file as n_link  # noqa: E402
+import tools.ambienti as t_amb  # noqa: E402
 
 
 def patch_ovunque(nome, valore):
@@ -140,6 +141,33 @@ def crea_remoti():
         sp.run(["git", "-C", str(lavoro), "push", "-q", str(bare), "main"], check=True)
 
 
+def crea_distribuzioni(cartella):
+    """Node.js, Go e uv finti, con la stessa struttura dei pacchetti ufficiali."""
+    import tarfile, io as io_mod, json as json_mod
+    def tgz(dest, file):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(dest, "w:gz") as tf:
+            for nome, contenuto in file.items():
+                dati = contenuto.encode()
+                info = tarfile.TarInfo(nome); info.size = len(dati); info.mode = 0o755
+                tf.addfile(info, io_mod.BytesIO(dati))
+    (cartella / "node").mkdir(parents=True, exist_ok=True)
+    (cartella / "node" / "index.json").write_text(json_mod.dumps([
+        {"version": "v23.0.0", "lts": False}, {"version": "v22.1.0", "lts": "Jod"}, {"version": "v20.5.0", "lts": "Iron"}]))
+    for v in ("v22.1.0", "v20.5.0"):
+        radice = f"node-{v}-linux-x64"
+        tgz(cartella / "node" / v / f"{radice}.tar.gz", {f"{radice}/bin/node": f"#!/bin/sh\necho {v}\n",
+                                                        f"{radice}/bin/npm": "#!/bin/sh\necho 10.0.0\n"})
+    (cartella / "go").mkdir(parents=True, exist_ok=True)
+    (cartella / "go" / "VERSION").write_text("go1.23.0\ntime 2026-01-01\n")
+    tgz(cartella / "go" / "dl" / "go1.23.0.linux-amd64.tar.gz", {"go/bin/go": "#!/bin/sh\necho go version go1.23.0 linux/amd64\n"})
+    tgz(cartella / "uv" / "uv-x86_64-unknown-linux-gnu.tar.gz", {"uv-x86_64-unknown-linux-gnu/uv": (
+        '#!/bin/sh\ncase "$1 $2" in\n'
+        '  "python install") mkdir -p "$HOME/.local/share/uv/python/cpython-$3"; echo "Installed Python $3" ;;\n'
+        '  "python find") echo "$HOME/.local/share/uv/python/cpython-$3/bin/python3" ;;\n'
+        '  *) echo "uv $*" ;;\nesac\n')})
+
+
 def log_remoto(nome, ramo="main"):
     import subprocess as sp
     r = sp.run(["git", "--git-dir", str(S / "remoti" / f"{nome}.git"), "log", "--format=%s|%an", ramo],
@@ -149,6 +177,9 @@ def log_remoto(nome, ramo="main"):
 
 async def main():
     crea_remoti()
+    mocks.DIST_DIR = S / "distribuzioni"
+    crea_distribuzioni(mocks.DIST_DIR)
+    t_amb.NODE_DIST_URL, t_amb.GO_URL, t_amb.UV_URL = W + "/dist/node", W + "/dist/go", W + "/dist/uv"
     servers = [await serve(mocks.hass_app, 18123), await serve(mocks.web_app, 18080), await serve(srv.crea_app(), 18000)]
     # --- auth ---
     async with httpx.AsyncClient() as c:
@@ -397,6 +428,25 @@ async def main():
                 await call("terminale_processi", azione="termina", id=jid)
                 await asyncio.sleep(1)
                 t = testo(await call("terminale_processi", azione="output", id=jid)); check("sandbox: processo in background terminabile", "terminato" in t, t)
+                # --- ambienti di sviluppo nella home persistente dell'agente ---
+                t = testo(await call("ambiente_installa", strumento="node"))
+                check("ambienti: Node.js LTS installato senza root", "Installato: node v22.1.0, npm 10.0.0" in t, t)
+                t = testo(await call("terminale_esegui", comando="node --version; echo $NPM_CONFIG_PREFIX; echo $HOME",
+                                     id_conversazione="altra-chat"))
+                check("ambienti: Node.js disponibile in tutte le conversazioni, npm -g nella home", "v22.1.0" in t
+                      and "/home/agente/.local" in t and "\n/home/agente" in t, t)
+                t = testo(await call("ambiente_installa", strumento="node", versione="20"))
+                check("ambienti: versione specifica di Node.js", "node v20.5.0" in t, t)
+                t = testo(await call("ambiente_installa", strumento="go"))
+                check("ambienti: Go", "go version go1.23.0" in t, t)
+                t = testo(await call("ambiente_installa", strumento="python", versione="3.12"))
+                check("ambienti: Python con uv", "Installato: Python 3.12" in t and "uv venv" in t, t)
+                await call("terminale_esegui", comando="echo persistente > ~/nota.txt")
+                t = testo(await call("terminale_esegui", comando="cat ~/nota.txt; ls $WORKSPACE | grep -c home_agente", id_conversazione="altra-chat"))
+                check("ambienti: home persistente e separata dal workspace", "persistente" in t and "\n0" in t
+                      and (DATA / "home_agente" / "nota.txt").exists(), t)
+                t = testo(await call("ambiente_installa", strumento="node", versione="22; rm -rf ~"))
+                check("ambienti: versione non valida rifiutata", "non valida" in t, t)
             else:
                 print("   (bubblewrap non disponibile: test della sandbox saltati)")
             originale_sandbox, originale_modo = n_sandbox.sandbox_disponibile, n_sandbox.TERMINAL_SANDBOX

@@ -13,7 +13,7 @@ from typing import Optional
 
 from nucleo.configurazione import _env, WORKSPACE_DIR
 from nucleo.server import UserError
-from nucleo.workspace import env_sicuro
+from nucleo.workspace import HOME_AGENTE, HOME_SANDBOX, env_sicuro, variabili_home
 
 
 # Sandbox (bubblewrap) per terminale ed esegui_python: i comandi vedono solo la cartella di lavoro e i programmi
@@ -44,12 +44,11 @@ def sandbox_disponibile() -> tuple[bool, str]:
 def argomenti_sandbox(base: Path, cwd: Path) -> list[str]:
     """
     Comando bwrap: il processo vede solo la cartella di lavoro (lettura/scrittura) e, in sola lettura,
-    i programmi di sistema, /etc e l'interprete Python del server. /tmp e la home sono temporanee;
-    la rete resta disponibile (git clone, pip, curl).
+    i programmi di sistema, /etc e l'interprete Python del server. /tmp e' temporanea; la home dell'agente
+    (/home/agente) e' persistente, per gli strumenti installati senza root. La rete resta disponibile.
     """
     a = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--share-net",
-         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--dir", "/tmp/home", "--setenv", "HOME", "/tmp/home",
-         "--ro-bind", "/usr", "/usr"]
+         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr"]
     for d in ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"):
         if os.path.islink(d):
             a += ["--symlink", os.readlink(d), d]
@@ -64,6 +63,10 @@ def argomenti_sandbox(base: Path, cwd: Path) -> list[str]:
     for d in sorted({sys.prefix, sys.base_prefix, str(Path(sys.executable).resolve().parent.parent)}):
         if d and not d.startswith("/usr") and os.path.isdir(d):
             a += ["--ro-bind", d, d]  # interprete Python e librerie del server (venv)
+    HOME_AGENTE.mkdir(parents=True, exist_ok=True)
+    a += ["--bind", str(HOME_AGENTE), HOME_SANDBOX]
+    for nome, valore in variabili_home(HOME_SANDBOX).items():
+        a += ["--setenv", nome, valore]
     a += ["--bind", str(base), str(base), "--chdir", str(cwd)]
     return a
 

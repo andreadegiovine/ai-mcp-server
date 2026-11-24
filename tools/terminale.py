@@ -88,7 +88,10 @@ PROCESSI = GestoreProcessi()
         "per comandi in sequenza usa '&&'. Restituisce codice di uscita e output (stdout+stderr). "
         "Per server o comandi molto lunghi usa in_background=true e poi terminale_processi. "
         "Non usare comandi interattivi (usa flag come -y). I comandi girano in una sandbox: vedono solo la "
-        "cartella di lavoro e i programmi di sistema, non il resto del server."
+        "cartella di lavoro e i programmi di sistema, non il resto del server. Non hai permessi di amministratore: "
+        "apt e sudo non funzionano. Per Node.js, Python o Go usa ambiente_installa; altri strumenti installali "
+        "senza root nella tua home persistente (~/.local/bin e' nel PATH, npm install -g e pip in un venv "
+        "funzionano e restano installati)."
         " Facoltativo: id_conversazione per lavorare nella cartella della conversazione."
     ),
     group="terminal",

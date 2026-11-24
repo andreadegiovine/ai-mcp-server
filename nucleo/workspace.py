@@ -7,7 +7,7 @@ from typing import Annotated, Optional
 
 from pydantic import Field
 
-from nucleo.configurazione import _env_bool, WORKSPACE_DIR, logger
+from nucleo.configurazione import DATA_DIR, _env_bool, WORKSPACE_DIR, logger
 from nucleo.server import FUNZIONALITA, UserError
 
 
@@ -25,14 +25,33 @@ _CHIAVI_SENSIBILI = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|CR
                                r"^HASS_|^GOOGLE_|^MCP_|^AWS_|^OPENAI|^ANTHROPIC)", re.I)
 
 
+# Home persistente dell'agente: strumenti installati senza root (Node.js, Python con uv, Go, npm -g, pip in
+# venv...) restano tra un comando e l'altro e tra le conversazioni. Nella sandbox e' visibile come /home/agente.
+HOME_AGENTE = DATA_DIR / "home_agente"
+HOME_SANDBOX = "/home/agente"
+
+
+def path_base() -> str:
+    """PATH di sistema con il Python del server."""
+    path = os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin")
+    venv_bin = str(Path(sys.executable).parent)
+    return path if venv_bin in path.split(os.pathsep) else venv_bin + os.pathsep + path
+
+
+def variabili_home(home: str) -> dict[str, str]:
+    """HOME, PATH e cartelle degli strumenti installati dall'agente nella sua home."""
+    cartelle_bin = [f"{home}/.local/bin", f"{home}/go/bin", f"{home}/.cargo/bin"]
+    return {"HOME": home, "PATH": os.pathsep.join(cartelle_bin + [path_base()]),
+            "NPM_CONFIG_PREFIX": f"{home}/.local", "GOPATH": f"{home}/go", "XDG_CACHE_HOME": f"{home}/.cache"}
+
+
 def env_sicuro(base: Optional[Path] = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not _CHIAVI_SENSIBILI.search(k)}
     env.update({"PYTHONUNBUFFERED": "1", "GIT_TERMINAL_PROMPT": "0", "TERM": "dumb",
                 "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PAGER": "cat", "GIT_PAGER": "cat",
                 "WORKSPACE": str(base or WORKSPACE_DIR)})
-    venv_bin = str(Path(sys.executable).parent)
-    if venv_bin not in env.get("PATH", ""):
-        env["PATH"] = venv_bin + os.pathsep + env.get("PATH", "")
+    HOME_AGENTE.mkdir(parents=True, exist_ok=True)
+    env.update(variabili_home(str(HOME_AGENTE)))
     return env
 
 

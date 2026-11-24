@@ -94,8 +94,8 @@ def controlla_permessi() -> list[str]:
     """Cartelle o file di DATA_DIR non scrivibili dall'utente del servizio (es. creati da root)."""
     problemi = []
     for radice, cartelle, files in os.walk(DATA_DIR):
-        if Path(radice) == WORKSPACE_DIR or WORKSPACE_DIR in Path(radice).parents:
-            cartelle[:] = []  # i file dentro il workspace li gestisce l'agente
+        if Path(radice) in (WORKSPACE_DIR, DATA_DIR / "home_agente"):
+            cartelle[:] = []  # workspace e home dell'agente: i file li gestisce l'agente
         for nome in [radice] + [os.path.join(radice, f) for f in files]:
             if not os.access(nome, os.W_OK):
                 problemi.append(nome)
