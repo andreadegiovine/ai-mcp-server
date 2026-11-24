@@ -30,7 +30,8 @@ ProtectSystem=strict
 ReadWritePaths=/opt/mcp-server/data /home/mcp
 PrivateTmp=yes
 # Dischi esterni e cartelle condivise invisibili al server e ai comandi dell'agente.
-# Se DATA_DIR sta in una di queste cartelle, toglila da questa riga.
+# Per tenere DATA_DIR in una di queste cartelle usa un drop-in (README, "Dati su un disco esterno"),
+# non modificare questo file: viene sostituito a ogni aggiornamento.
 TemporaryFileSystem=/mnt:ro /media:ro /srv:ro
 
 [Install]

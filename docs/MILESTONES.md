@@ -19,6 +19,8 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 - I link ai file sono capability firmate invece che protetti dalla chiave API, perché il browser non può inviarla con un tag `<img>`
 - Il push usa il token solo dalla riga di comando del server, dopo aver verificato la configurazione del repository: l'agente non può usarlo per altro
 
+- ✅ README: procedura "Dati su un disco esterno" (`DATA_DIR` in `/mnt` tramite drop-in di systemd, senza modificare il servizio)
+
 ### Da verificare
 - ⏳ Link ai file visualizzati in OpenWebUI (il browser deve raggiungere l'indirizzo con cui OpenWebUI si collega al server)
 - ⏳ Clone, push e pull request su GitHub reale con un token fine-grained

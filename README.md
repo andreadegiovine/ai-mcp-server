@@ -742,10 +742,34 @@ Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il t
    useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=-/etc/mcp-server/mcp-server.env`, che systemd legge come root.
-3. **Dischi montati nascosti.** Il servizio nasconde `/mnt`, `/media` e `/srv` all'intero processo del server, sandbox o no (`TemporaryFileSystem=`). Se tieni `DATA_DIR` su un disco montato lì, togli quella cartella dalla riga nel servizio.
+3. **Dischi montati nascosti.** Il servizio nasconde `/mnt`, `/media` e `/srv` all'intero processo del server, sandbox o no (`TemporaryFileSystem=`). Per tenere i dati su un disco montato lì, vedi [Dati su un disco esterno](#dati-su-un-disco-esterno).
 4. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 5. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 6. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
+
+### Dati su un disco esterno
+Per usare come `DATA_DIR` una cartella in `/mnt` (o `/media`, `/srv`), non modificare `mcp-server.service`, perché viene sostituito a ogni aggiornamento. Aggiungi invece un *drop-in*, un file separato che gli aggiornamenti non toccano. Esempio con `/mnt/hdd-esterno/mcp-server`, usando una sottocartella dedicata e non la radice del disco:
+
+```bash
+mkdir -p /mnt/hdd-esterno/mcp-server && chown mcp:mcp /mnt/hdd-esterno/mcp-server
+```
+
+Per spostare i dati esistenti:
+
+```bash
+systemctl stop mcp-server && cp -a /opt/mcp-server/data/. /mnt/hdd-esterno/mcp-server/ && chown -R mcp:mcp /mnt/hdd-esterno/mcp-server
+```
+
+Nelle [variabili fisse](#variabili-fisse): `DATA_DIR=/mnt/hdd-esterno/mcp-server`. Poi crea il drop-in:
+
+```bash
+mkdir -p /etc/systemd/system/mcp-server.service.d && printf '[Service]\nTemporaryFileSystem=\nTemporaryFileSystem=/media:ro /srv:ro\nReadWritePaths=/mnt/hdd-esterno/mcp-server\n' > /etc/systemd/system/mcp-server.service.d/dati.conf && systemctl daemon-reload && systemctl restart mcp-server
+```
+
+- La riga vuota `TemporaryFileSystem=` azzera l'elenco del servizio, che viene ridefinito senza `/mnt`.
+- `ReadWritePaths` rende scrivibile solo la cartella dei dati: il resto del disco resta in sola lettura per il server.
+- L'agente continua a vedere solo il workspace, grazie alla sandbox del terminale e al confinamento dei tool sui file.
+- Se `chown` risponde `Operation not permitted`, il disco è montato dall'host Proxmox in un container unprivileged: la proprietà va impostata sull'host, con uid e gid pari a 100000 più l'uid di `mcp` nel container (`id -u mcp`).
 
 ---
 
