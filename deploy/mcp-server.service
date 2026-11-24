@@ -18,9 +18,6 @@ EnvironmentFile=/opt/mcp-server/.env
 # systemd le legge come root prima di passare all'utente mcp. Vengono dopo il .env, quindi hanno la
 # precedenza (per systemd l'ultimo file vince). Il "-" rende il file facoltativo.
 EnvironmentFile=-/etc/mcp-server/mcp-server.env
-# Cartella dei dati del server (memoria, timer, rubrica, workspace...) sul disco esterno.
-# Se DATA_DIR e' definita anche nelle variabili fisse, vale quella: deve restare in ReadWritePaths.
-Environment=DATA_DIR=/mnt/hdd-esterno
 Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 Environment=PATH=/opt/mcp-server/venv/bin:/home/mcp/.deno/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=/opt/mcp-server/venv/bin/python /opt/mcp-server/mcp_server.py
@@ -30,7 +27,8 @@ RestartSec=5
 # Hardening: il resto del sistema e' in sola lettura per il server e per i comandi dell'agente
 NoNewPrivileges=yes
 ProtectSystem=strict
-ReadWritePaths=/mnt/hdd-esterno /home/mcp
+# /mnt scrivibile: la cartella dei dati (DATA_DIR, nelle variabili fisse) puo' stare su un disco montato li'
+ReadWritePaths=/mnt /home/mcp
 PrivateTmp=yes
 # Altri punti di montaggio invisibili al server (i comandi dell'agente, nella sandbox, vedono comunque
 # solo il workspace). /mnt resta visibile perche' contiene il disco dei dati.

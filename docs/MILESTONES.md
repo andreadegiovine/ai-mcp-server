@@ -19,7 +19,7 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 - I link ai file sono capability firmate invece che protetti dalla chiave API, perché il browser non può inviarla con un tag `<img>`
 - Il push usa il token solo dalla riga di comando del server, dopo aver verificato la configurazione del repository: l'agente non può usarlo per altro
 
-- ✅ Servizio systemd: cartella dei dati `/mnt/hdd-esterno` (`DATA_DIR` e `ReadWritePaths`), `/mnt` non più nascosta (restano nascoste `/media` e `/srv`); README con la procedura per la cartella dei dati
+- ✅ Servizio systemd: `/mnt` scrivibile (`ReadWritePaths=/mnt`) e non più nascosta (restano nascoste `/media` e `/srv`), così la cartella dei dati può stare su un disco montato lì; `DATA_DIR` si imposta nelle variabili fisse. README con la procedura per la cartella dei dati
 
 ### Da verificare
 - ⏳ Link ai file visualizzati in OpenWebUI (il browser deve raggiungere l'indirizzo con cui OpenWebUI si collega al server)

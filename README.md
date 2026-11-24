@@ -742,13 +742,13 @@ Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il t
    useradd -r -m -s /bin/bash mcp && mkdir -p /mnt/hdd-esterno && chown -R mcp:mcp /mnt/hdd-esterno
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=-/etc/mcp-server/mcp-server.env`, che systemd legge come root.
-3. **Cartella dati e punti di montaggio.** I dati del server stanno in `/mnt/hdd-esterno` (`DATA_DIR`, impostata nel servizio), l'unica cartella in cui il server può scrivere oltre alla home di `mcp`. `/media` e `/srv` sono nascoste all'intero processo del server (`TemporaryFileSystem=`). Vedi [Cartella dei dati](#cartella-dei-dati).
+3. **Cartella dati e punti di montaggio.** Il server può scrivere solo in `/mnt`, dove sta la cartella dei dati (`DATA_DIR`, nelle variabili fisse), e nella home di `mcp`. `/media` e `/srv` sono nascoste all'intero processo del server (`TemporaryFileSystem=`). Vedi [Cartella dei dati](#cartella-dei-dati).
 4. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 5. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 6. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
 
 ### Cartella dei dati
-Il servizio [`deploy/mcp-server.service`](deploy/mcp-server.service) usa come cartella dei dati `/mnt/hdd-esterno` (`Environment=DATA_DIR=...` e `ReadWritePaths=`): basta copiarlo, senza modifiche a mano.
+La cartella dei dati si imposta con `DATA_DIR` nelle [variabili fisse](#variabili-fisse), per esempio `DATA_DIR=/mnt/hdd-esterno`. Il servizio [`deploy/mcp-server.service`](deploy/mcp-server.service) rende scrivibile tutta `/mnt` (`ReadWritePaths=/mnt`), quindi per cambiare cartella o disco sotto `/mnt` basta modificare `DATA_DIR`, senza toccare il servizio.
 
 - **Al primo avvio** la cartella deve esistere ed essere dell'utente `mcp`:
   ```bash
@@ -759,9 +759,9 @@ Il servizio [`deploy/mcp-server.service`](deploy/mcp-server.service) usa come ca
   ```bash
   systemctl stop mcp-server && cp -a /opt/mcp-server/data/. /mnt/hdd-esterno/ && chown -R mcp:mcp /mnt/hdd-esterno && systemctl start mcp-server
   ```
-- **Il server** può scrivere in tutta `/mnt/hdd-esterno`. **L'agente** invece vede solo il workspace (`/mnt/hdd-esterno/workspace`), grazie alla sandbox del terminale e al confinamento dei tool sui file: gli altri file del disco restano fuori dalla sua portata.
+- **Il server** può scrivere in tutta `/mnt`. **L'agente** invece vede solo il workspace (`DATA_DIR/workspace`), grazie alla sandbox del terminale e al confinamento dei tool sui file: gli altri file del disco restano fuori dalla sua portata.
 - **Se il disco non è montato,** il server scriverebbe nella cartella vuota sul disco del container: controlla che il disco sia montato prima di avviare il servizio.
-- **Per usare un'altra cartella:** imposta `DATA_DIR` nelle [variabili fisse](#variabili-fisse) e aggiungi la cartella a `ReadWritePaths` con un drop-in (`systemctl edit mcp-server`), che gli aggiornamenti non toccano.
+- **Per una cartella fuori da `/mnt`:** oltre a `DATA_DIR`, aggiungila a `ReadWritePaths` con un drop-in (`systemctl edit mcp-server`), che gli aggiornamenti non toccano.
 
 ---
 
