@@ -739,37 +739,29 @@ Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il t
 1. **Container LXC unprivileged.** Si controlla sull'host Proxmox con `pct config <ID> | grep unprivileged`.
 2. **Utente dedicato, non root.** Così il codice del server non è modificabile e i segreti, nel file delle [variabili fisse](#variabili-fisse) (`/etc/mcp-server/mcp-server.env`, permessi 600), non sono leggibili:
    ```bash
-   useradd -r -m -s /bin/bash mcp && mkdir -p /opt/mcp-server/data && chown -R mcp:mcp /opt/mcp-server/data
+   useradd -r -m -s /bin/bash mcp && mkdir -p /mnt/hdd-esterno && chown -R mcp:mcp /mnt/hdd-esterno
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=-/etc/mcp-server/mcp-server.env`, che systemd legge come root.
-3. **Dischi montati nascosti.** Il servizio nasconde `/mnt`, `/media` e `/srv` all'intero processo del server, sandbox o no (`TemporaryFileSystem=`). Per tenere i dati su un disco montato lì, vedi [Dati su un disco esterno](#dati-su-un-disco-esterno).
+3. **Cartella dati e punti di montaggio.** I dati del server stanno in `/mnt/hdd-esterno` (`DATA_DIR`, impostata nel servizio), l'unica cartella in cui il server può scrivere oltre alla home di `mcp`. `/media` e `/srv` sono nascoste all'intero processo del server (`TemporaryFileSystem=`). Vedi [Cartella dei dati](#cartella-dei-dati).
 4. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
 5. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 6. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
 
-### Dati su un disco esterno
-Per usare come `DATA_DIR` una cartella in `/mnt` (o `/media`, `/srv`), non modificare `mcp-server.service`, perché viene sostituito a ogni aggiornamento. Aggiungi invece un *drop-in*, un file separato che gli aggiornamenti non toccano. Esempio con `/mnt/hdd-esterno/mcp-server`, usando una sottocartella dedicata e non la radice del disco:
+### Cartella dei dati
+Il servizio [`deploy/mcp-server.service`](deploy/mcp-server.service) usa come cartella dei dati `/mnt/hdd-esterno` (`Environment=DATA_DIR=...` e `ReadWritePaths=`): basta copiarlo, senza modifiche a mano.
 
-```bash
-mkdir -p /mnt/hdd-esterno/mcp-server && chown mcp:mcp /mnt/hdd-esterno/mcp-server
-```
-
-Per spostare i dati esistenti:
-
-```bash
-systemctl stop mcp-server && cp -a /opt/mcp-server/data/. /mnt/hdd-esterno/mcp-server/ && chown -R mcp:mcp /mnt/hdd-esterno/mcp-server
-```
-
-Nelle [variabili fisse](#variabili-fisse): `DATA_DIR=/mnt/hdd-esterno/mcp-server`. Poi crea il drop-in:
-
-```bash
-mkdir -p /etc/systemd/system/mcp-server.service.d && printf '[Service]\nTemporaryFileSystem=\nTemporaryFileSystem=/media:ro /srv:ro\nReadWritePaths=/mnt/hdd-esterno/mcp-server\n' > /etc/systemd/system/mcp-server.service.d/dati.conf && systemctl daemon-reload && systemctl restart mcp-server
-```
-
-- La riga vuota `TemporaryFileSystem=` azzera l'elenco del servizio, che viene ridefinito senza `/mnt`.
-- `ReadWritePaths` rende scrivibile solo la cartella dei dati: il resto del disco resta in sola lettura per il server.
-- L'agente continua a vedere solo il workspace, grazie alla sandbox del terminale e al confinamento dei tool sui file.
-- Se `chown` risponde `Operation not permitted`, il disco è montato dall'host Proxmox in un container unprivileged: la proprietà va impostata sull'host, con uid e gid pari a 100000 più l'uid di `mcp` nel container (`id -u mcp`).
+- **Al primo avvio** la cartella deve esistere ed essere dell'utente `mcp`:
+  ```bash
+  mkdir -p /mnt/hdd-esterno && chown -R mcp:mcp /mnt/hdd-esterno
+  ```
+  Se `chown` risponde `Operation not permitted`, il disco è montato dall'host Proxmox in un container unprivileged: la proprietà va impostata sull'host, con uid e gid pari a 100000 più l'uid di `mcp` nel container (`id -u mcp`).
+- **Per spostare i dati** da una cartella precedente (es. `/opt/mcp-server/data`):
+  ```bash
+  systemctl stop mcp-server && cp -a /opt/mcp-server/data/. /mnt/hdd-esterno/ && chown -R mcp:mcp /mnt/hdd-esterno && systemctl start mcp-server
+  ```
+- **Il server** può scrivere in tutta `/mnt/hdd-esterno`. **L'agente** invece vede solo il workspace (`/mnt/hdd-esterno/workspace`), grazie alla sandbox del terminale e al confinamento dei tool sui file: gli altri file del disco restano fuori dalla sua portata.
+- **Se il disco non è montato,** il server scriverebbe nella cartella vuota sul disco del container: controlla che il disco sia montato prima di avviare il servizio.
+- **Per usare un'altra cartella:** imposta `DATA_DIR` nelle [variabili fisse](#variabili-fisse) e aggiungi la cartella a `ReadWritePaths` con un drop-in (`systemctl edit mcp-server`), che gli aggiornamenti non toccano.
 
 ---
 
@@ -836,7 +828,7 @@ Per aggiungere uno strumento: crea un modulo in `tools/` con le sue costanti (le
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
 | Nel log: `Terminale SENZA sandbox` | Installa `bubblewrap`; se non basta, in Proxmox abilita Opzioni → Funzionalità → Nesting per il container (vedi [Sicurezza](#sicurezza)) |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
-| `PermissionError: [Errno 13] Permission denied: '/opt/mcp-server/data/...'` | Alcuni file di `data/` appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /opt/mcp-server/data` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |
+| `PermissionError: [Errno 13] Permission denied: '/mnt/hdd-esterno/...'` | Alcuni file della cartella dati appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /mnt/hdd-esterno` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |
 | Nel log: `Executable doesn't exist at /opt/ms-playwright/...` | Playwright è stato aggiornato ma il suo browser no: esegui `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install chromium` e riavvia il servizio (passo 3 di [Aggiornamento](#aggiornamento)) |
 | Le aree non compaiono nella ricerca HA | Il token deve appartenere a un utente admin (per `/api/template`) |
 | La musica non parte | Aggiorna `yt-dlp`, installa deno; per la riproduzione locale servono `mpv` e un'uscita audio |
