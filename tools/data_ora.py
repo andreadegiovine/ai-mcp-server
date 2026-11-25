@@ -1,6 +1,6 @@
 """Strumento: data e ora correnti."""
+
 from datetime import datetime
-from typing import Optional
 from zoneinfo import ZoneInfo
 
 from nucleo.configurazione import TZ
@@ -13,12 +13,12 @@ from nucleo.utilita import GIORNI, MESI
     title="Data e ora",
     description=(
         "Restituisce data, ora, giorno della settimana e numero di settimana correnti. "
-        "Usalo quando l'utente chiede che ore sono, che giorno e' oggi o per qualsiasi calcolo che "
+        "Usalo quando l'utente chiede che ore sono, che giorno è oggi o per qualsiasi calcolo che "
         "dipende dalla data attuale. Parametro opzionale fuso_orario IANA (es. 'America/New_York')."
     ),
     read_only=True,
 )
-async def data_ora_corrente(fuso_orario: Optional[str] = None) -> str:
+async def data_ora_corrente(fuso_orario: str | None = None) -> str:
     tz = TZ
     if fuso_orario:
         try:

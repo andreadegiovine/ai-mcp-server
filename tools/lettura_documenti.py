@@ -1,4 +1,5 @@
 """Estrazione del testo dai documenti (PDF, Office, OpenDocument, RTF, EPUB, email, OCR)."""
+
 import contextlib
 import email
 import email.policy
@@ -9,13 +10,13 @@ import subprocess
 import tarfile
 import tempfile
 import threading
-import zipfile
 import xml.etree.ElementTree as ET
+import zipfile
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from nucleo.configurazione import _env, _env_int, DATA_DIR, logger
+from nucleo.configurazione import DATA_DIR, env_int, env_str, logger
 from nucleo.server import UserError
 from nucleo.workspace import env_sicuro
 
@@ -31,39 +32,78 @@ except ImportError:  # pragma: no cover
 
 
 # OCR (tesseract) per PDF scansionati e immagini, LibreOffice per i vecchi formati Office
-OCR_LINGUE = _env("OCR_LINGUE", "ita+eng")
-OCR_MAX_PAGINE = _env_int("OCR_MAX_PAGINE", 30)
+OCR_LINGUE = env_str("OCR_LINGUE", "ita+eng")
+OCR_MAX_PAGINE = env_int("OCR_MAX_PAGINE", 30)
 
 
 # --- Estrazione del testo dai documenti (usata da file_leggi) ------------------
 _TIPI_DOCUMENTO = {
     ".pdf": "pdf",
-    ".docx": "docx", ".docm": "docx", ".dotx": "docx", ".dotm": "docx",
-    ".xlsx": "xlsx", ".xlsm": "xlsx", ".xltx": "xlsx", ".xltm": "xlsx",
+    ".docx": "docx",
+    ".docm": "docx",
+    ".dotx": "docx",
+    ".dotm": "docx",
+    ".xlsx": "xlsx",
+    ".xlsm": "xlsx",
+    ".xltx": "xlsx",
+    ".xltm": "xlsx",
     ".xls": "xls",
-    ".pptx": "pptx", ".pptm": "pptx", ".ppsx": "pptx", ".potx": "pptx",
-    ".odt": "odf", ".ott": "odf", ".ods": "odf", ".ots": "odf", ".odp": "odf", ".otp": "odf",
-    ".rtf": "rtf", ".epub": "epub", ".eml": "eml",
-    ".doc": "office_vecchio", ".dot": "office_vecchio", ".ppt": "office_vecchio", ".pps": "office_vecchio",
-    ".wpd": "office_vecchio", ".wps": "office_vecchio", ".pub": "office_vecchio",
-    ".png": "immagine", ".jpg": "immagine", ".jpeg": "immagine", ".gif": "immagine", ".bmp": "immagine",
-    ".tif": "immagine", ".tiff": "immagine", ".webp": "immagine",
-    ".zip": "archivio", ".tar": "archivio", ".gz": "archivio", ".tgz": "archivio", ".bz2": "archivio",
+    ".pptx": "pptx",
+    ".pptm": "pptx",
+    ".ppsx": "pptx",
+    ".potx": "pptx",
+    ".odt": "odf",
+    ".ott": "odf",
+    ".ods": "odf",
+    ".ots": "odf",
+    ".odp": "odf",
+    ".otp": "odf",
+    ".rtf": "rtf",
+    ".epub": "epub",
+    ".eml": "eml",
+    ".doc": "office_vecchio",
+    ".dot": "office_vecchio",
+    ".ppt": "office_vecchio",
+    ".pps": "office_vecchio",
+    ".wpd": "office_vecchio",
+    ".wps": "office_vecchio",
+    ".pub": "office_vecchio",
+    ".png": "immagine",
+    ".jpg": "immagine",
+    ".jpeg": "immagine",
+    ".gif": "immagine",
+    ".bmp": "immagine",
+    ".tif": "immagine",
+    ".tiff": "immagine",
+    ".webp": "immagine",
+    ".zip": "archivio",
+    ".tar": "archivio",
+    ".gz": "archivio",
+    ".tgz": "archivio",
+    ".bz2": "archivio",
     ".xz": "archivio",
 }
-_NOMI_TIPI = {
-    "pdf": "PDF", "docx": "documento Word", "xlsx": "foglio Excel", "xls": "foglio Excel (formato vecchio)",
-    "pptx": "presentazione PowerPoint", "odf": "documento OpenDocument (LibreOffice)", "rtf": "documento RTF",
-    "epub": "libro EPUB", "eml": "email", "office_vecchio": "documento Office (formato vecchio)",
-    "immagine": "immagine", "archivio": "archivio",
+NOMI_TIPI = {
+    "pdf": "PDF",
+    "docx": "documento Word",
+    "xlsx": "foglio Excel",
+    "xls": "foglio Excel (formato vecchio)",
+    "pptx": "presentazione PowerPoint",
+    "odf": "documento OpenDocument (LibreOffice)",
+    "rtf": "documento RTF",
+    "epub": "libro EPUB",
+    "eml": "email",
+    "office_vecchio": "documento Office (formato vecchio)",
+    "immagine": "immagine",
+    "archivio": "archivio",
 }
 _MAX_TESTO_DOCUMENTO = 5_000_000
 _MAX_ZIP_MEMBRO = 100 * 1024 * 1024
 _cache_documenti: dict[tuple, str] = {}
 
 
-def tipo_documento(p: Path, inizio: bytes) -> Optional[str]:
-    """Tipo di documento da convertire in testo; None = file di testo da leggere cosi' com'e'."""
+def tipo_documento(p: Path, inizio: bytes) -> str | None:
+    """Tipo di documento da convertire in testo; None = file di testo da leggere così com'è."""
     if inizio.startswith(b"%PDF"):
         return "pdf"
     if inizio.startswith(b"{\\rtf"):
@@ -93,7 +133,7 @@ def _cella(v: Any) -> str:
     return str(v).replace("\n", " ").strip()
 
 
-def _riga_tabella(valori: list) -> Optional[str]:
+def _riga_tabella(valori: list) -> str | None:
     celle = [_cella(v) for v in valori]
     while celle and not celle[-1]:
         celle.pop()
@@ -104,13 +144,15 @@ def _html_a_testo(html: str) -> str:
     testo = None
     if trafilatura is not None:
         with contextlib.suppress(Exception):
-            testo = trafilatura.extract(html, include_tables=True, include_comments=False,
-                                        output_format="markdown", favor_recall=True)
+            testo = trafilatura.extract(
+                html, include_tables=True, include_comments=False, output_format="markdown", favor_recall=True
+            )
     if not testo:
         testo = re.sub(r"(?is)<(script|style|head)\b.*?</\1>", " ", html)
         testo = re.sub(r"(?i)<br\s*/?>|</(p|div|h[1-6]|li|tr)>", "\n", testo)
         testo = re.sub(r"<[^>]+>", " ", testo)
         import html as html_mod
+
         testo = html_mod.unescape(testo)
         testo = "\n".join(re.sub(r"[ \t]+", " ", r).strip() for r in testo.splitlines())
     return re.sub(r"\n{3,}", "\n\n", testo).strip()
@@ -131,8 +173,12 @@ def _lingue_ocr() -> str:
 
 
 def _ocr_immagine(percorso_immagine: Path) -> str:
-    r = subprocess.run(["tesseract", str(percorso_immagine), "stdout", "-l", _lingue_ocr()],
-                       capture_output=True, text=True, timeout=120)
+    r = subprocess.run(
+        ["tesseract", str(percorso_immagine), "stdout", "-l", _lingue_ocr()],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     return r.stdout.strip()
 
 
@@ -147,11 +193,11 @@ def _pdf_testo(p: Path) -> str:
     if reader.is_encrypted:
         try:
             if not reader.decrypt(""):
-                raise UserError("Il PDF e' protetto da password.")
+                raise UserError("Il PDF è protetto da password.")
         except UserError:
             raise
         except Exception:
-            raise UserError("Il PDF e' protetto da password o cifrato in un formato non supportato.")
+            raise UserError("Il PDF è protetto da password o cifrato in un formato non supportato.")
     pagine: list[str] = []
     vuote: list[int] = []
     for i, pagina in enumerate(reader.pages, 1):
@@ -171,8 +217,10 @@ def _pdf_testo(p: Path) -> str:
             if len(vuote) > OCR_MAX_PAGINE:
                 note = f"\n[OCR limitato alle prime {OCR_MAX_PAGINE} pagine senza testo (OCR_MAX_PAGINE)]"
         else:
-            note = (f"\n[{len(vuote)} pagine senza testo: probabilmente e' un PDF scansionato. Per leggerlo serve "
-                    f"l'OCR, da installare sul server: {_comando_installa_ocr()}]")
+            note = (
+                f"\n[{len(vuote)} pagine senza testo: probabilmente è un PDF scansionato. Per leggerlo serve "
+                f"l'OCR, da installare sul server: {_comando_installa_ocr()}]"
+            )
     corpo = "\n\n".join(f"--- Pagina {i} ---\n{t}" for i, t in enumerate(pagine, 1) if t)
     return f"{len(pagine)} pagine\n\n{corpo}{note}".strip()
 
@@ -184,6 +232,7 @@ def _pdf_ocr(p: Path, numeri: list[int]) -> dict[int, str]:
             immagine = Path(tmp) / f"p{n}.png"
             try:
                 import pypdfium2 as pdfium
+
                 doc = pdfium.PdfDocument(str(p))
                 try:
                     doc[n - 1].render(scale=2.5).to_pil().save(immagine)
@@ -191,9 +240,26 @@ def _pdf_ocr(p: Path, numeri: list[int]) -> dict[int, str]:
                     doc.close()
             except ImportError:
                 if not shutil.which("pdftoppm"):
-                    raise UserError("Per l'OCR dei PDF serve pypdfium2 (pip) oppure pdftoppm (apt install poppler-utils).")
-                subprocess.run(["pdftoppm", "-f", str(n), "-l", str(n), "-r", "200", "-png", "-singlefile",
-                                str(p), str(immagine.with_suffix(""))], capture_output=True, timeout=120)
+                    raise UserError(
+                        "Per l'OCR dei PDF serve pypdfium2 (pip) oppure pdftoppm (apt install poppler-utils)."
+                    )
+                subprocess.run(
+                    [
+                        "pdftoppm",
+                        "-f",
+                        str(n),
+                        "-l",
+                        str(n),
+                        "-r",
+                        "200",
+                        "-png",
+                        "-singlefile",
+                        str(p),
+                        str(immagine.with_suffix("")),
+                    ],
+                    capture_output=True,
+                    timeout=120,
+                )
             if immagine.exists():
                 risultati[n] = _ocr_immagine(immagine)
     return risultati
@@ -268,11 +334,13 @@ def _xls_testo(p: Path) -> str:
     try:
         libro = xlrd.open_workbook(str(p), on_demand=True)
     except Exception:
-        # molti ".xls" esportati dai gestionali sono in realta' HTML o XML: li converte LibreOffice
+        # molti ".xls" esportati dai gestionali sono in realtà HTML o XML: li converte LibreOffice
         if shutil.which("soffice") or shutil.which("libreoffice"):
             return _office_vecchio_testo(p)
-        raise UserError("Il file .xls non e' un foglio Excel valido (forse e' HTML o XML): prova a leggerlo "
-                        "come testo con terminale_esegui, oppure installa LibreOffice sul server.")
+        raise UserError(
+            "Il file .xls non è un foglio Excel valido (forse è HTML o XML): prova a leggerlo "
+            "come testo con terminale_esegui, oppure installa LibreOffice sul server."
+        )
     parti = []
     for foglio in libro.sheets():
         righe = []
@@ -407,8 +475,11 @@ def _epub_testo(p: Path) -> str:
             opf = ET.fromstring(_leggi_zip(zf, opf_path))
             base = opf_path.rsplit("/", 1)[0] + "/" if "/" in opf_path else ""
             manifest = {e.get("id"): e.get("href") for e in opf.iter() if e.tag.endswith("}item")}
-            ordine = [base + manifest[e.get("idref")] for e in opf.iter()
-                      if e.tag.endswith("}itemref") and e.get("idref") in manifest]
+            ordine = [
+                base + manifest[e.get("idref")]
+                for e in opf.iter()
+                if e.tag.endswith("}itemref") and e.get("idref") in manifest
+            ]
         if not ordine:
             ordine = sorted(n for n in zf.namelist() if n.lower().endswith((".xhtml", ".html", ".htm")))
         capitoli = []
@@ -437,11 +508,16 @@ def _eml_testo(p: Path) -> str:
 
 def _immagine_testo(p: Path) -> str:
     if not shutil.which("tesseract"):
-        raise UserError("E' un'immagine: usa vedi_immagine per guardarla. Per estrarne il testo con l'OCR, "
-                        f"installa sul server: {_comando_installa_ocr()}")
+        raise UserError(
+            "È un'immagine: usa vedi_immagine per guardarla. Per estrarne il testo con l'OCR, "
+            f"installa sul server: {_comando_installa_ocr()}"
+        )
     testo = _ocr_immagine(p)
-    return ("[testo riconosciuto con OCR; per vedere l'immagine usa vedi_immagine]\n\n" + testo) if testo else \
-        "Nessun testo riconosciuto nell'immagine (per guardarla usa vedi_immagine)."
+    return (
+        ("[testo riconosciuto con OCR; per vedere l'immagine usa vedi_immagine]\n\n" + testo)
+        if testo
+        else "Nessun testo riconosciuto nell'immagine (per guardarla usa vedi_immagine)."
+    )
 
 
 def _archivio_testo(p: Path) -> str:
@@ -460,8 +536,11 @@ def _archivio_testo(p: Path) -> str:
         except tarfile.TarError:
             raise UserError("Archivio non riconosciuto (supportati zip e tar, anche compressi).")
     extra = f"\n[... altre {totale - 500} voci ...]" if totale > 500 else ""
-    return (f"Archivio con {totale} file (per estrarlo usa terminale_esegui, es. unzip o tar -xf):\n"
-            + "\n".join(righe) + extra)
+    return (
+        f"Archivio con {totale} file (per estrarlo usa terminale_esegui, es. unzip o tar -xf):\n"
+        + "\n".join(righe)
+        + extra
+    )
 
 
 _LOCK_LIBREOFFICE = threading.Lock()
@@ -473,29 +552,53 @@ def _office_vecchio_testo(p: Path) -> str:
     destinazione = {".ppt": "pptx", ".pps": "pptx", ".xls": "xlsx"}.get(estensione, "docx")
     if not soffice:
         pacchetto = "libreoffice-impress-nogui" if destinazione == "pptx" else "libreoffice-writer-nogui"
-        raise UserError(f"Per leggere i file {estensione} serve LibreOffice sul server: "
-                        f"apt install -y --no-install-recommends {pacchetto}")
+        raise UserError(
+            f"Per leggere i file {estensione} serve LibreOffice sul server: "
+            f"apt install -y --no-install-recommends {pacchetto}"
+        )
     profilo = DATA_DIR / ".libreoffice"
     profilo.mkdir(parents=True, exist_ok=True)
     # un solo LibreOffice alla volta: due istanze con lo stesso profilo si bloccano a vicenda
     with _LOCK_LIBREOFFICE, tempfile.TemporaryDirectory(prefix="conv-") as tmp:
         try:
-            subprocess.run([soffice, "--headless", "--norestore", "--nologo",
-                            f"-env:UserInstallation=file://{profilo}", "--convert-to", destinazione,
-                            "--outdir", tmp, str(p)],
-                           capture_output=True, timeout=180, env=env_sicuro())
+            subprocess.run(
+                [
+                    soffice,
+                    "--headless",
+                    "--norestore",
+                    "--nologo",
+                    f"-env:UserInstallation=file://{profilo}",
+                    "--convert-to",
+                    destinazione,
+                    "--outdir",
+                    tmp,
+                    str(p),
+                ],
+                capture_output=True,
+                timeout=180,
+                env=env_sicuro(),
+            )
         except subprocess.TimeoutExpired:
             raise UserError("La conversione con LibreOffice ha impiegato troppo tempo.")
         convertiti = list(Path(tmp).glob(f"*.{destinazione}"))
         if not convertiti:
-            raise UserError(f"LibreOffice non e' riuscito a convertire {p.name}.")
+            raise UserError(f"LibreOffice non è riuscito a convertire {p.name}.")
         return {"docx": _docx_testo, "pptx": _pptx_testo, "xlsx": _xlsx_testo}[destinazione](convertiti[0])
 
 
 _ESTRATTORI = {
-    "pdf": _pdf_testo, "docx": _docx_testo, "xlsx": _xlsx_testo, "xls": _xls_testo, "pptx": _pptx_testo,
-    "odf": _odf_testo, "rtf": _rtf_testo, "epub": _epub_testo, "eml": _eml_testo, "immagine": _immagine_testo,
-    "archivio": _archivio_testo, "office_vecchio": _office_vecchio_testo,
+    "pdf": _pdf_testo,
+    "docx": _docx_testo,
+    "xlsx": _xlsx_testo,
+    "xls": _xls_testo,
+    "pptx": _pptx_testo,
+    "odf": _odf_testo,
+    "rtf": _rtf_testo,
+    "epub": _epub_testo,
+    "eml": _eml_testo,
+    "immagine": _immagine_testo,
+    "archivio": _archivio_testo,
+    "office_vecchio": _office_vecchio_testo,
 }
 
 
@@ -505,16 +608,16 @@ def estrai_testo_documento(p: Path, tipo: str) -> str:
     if chiave in _cache_documenti:
         return _cache_documenti[chiave]
     if tipo in ("docx", "xlsx", "pptx", "odf", "epub") and not zipfile.is_zipfile(p):
-        raise UserError(f"File {_NOMI_TIPI[tipo]} danneggiato o non valido: {p.name} non ha la struttura attesa.")
+        raise UserError(f"File {NOMI_TIPI[tipo]} danneggiato o non valido: {p.name} non ha la struttura attesa.")
     try:
         testo = _ESTRATTORI[tipo](p)
     except UserError:
         raise
     except (zipfile.BadZipFile, ET.ParseError, KeyError) as e:
-        raise UserError(f"File {_NOMI_TIPI.get(tipo, tipo)} danneggiato o non valido: {type(e).__name__}")
+        raise UserError(f"File {NOMI_TIPI.get(tipo, tipo)} danneggiato o non valido: {type(e).__name__}")
     except Exception as e:
         logger.warning(f"Estrazione testo da {p.name} fallita: {e}")
-        raise UserError(f"Impossibile leggere {p.name} come {_NOMI_TIPI.get(tipo, tipo)}: {type(e).__name__}: {e}")
+        raise UserError(f"Impossibile leggere {p.name} come {NOMI_TIPI.get(tipo, tipo)}: {type(e).__name__}: {e}")
     if len(testo) > _MAX_TESTO_DOCUMENTO:
         testo = testo[:_MAX_TESTO_DOCUMENTO] + "\n[... testo troncato ...]"
     if len(_cache_documenti) >= 10:

@@ -1,5 +1,7 @@
 # AI MCP Server
 
+[![Test](https://github.com/andreadegiovine/ai-mcp-server/actions/workflows/test.yml/badge.svg)](https://github.com/andreadegiovine/ai-mcp-server/actions/workflows/test.yml)
+
 Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (tramite **OpenWebUI**) una serie di strumenti reali: ricerca e lettura del web con immagini, un terminale con workspace dedicato, il controllo sicuro di **Home Assistant**, musica da YouTube in stile Alexa, timer e sveglie multipli, e **Google Calendar**.
 
 È un unico file (`mcp_server.py`), pensato per girare in un container LXC su Proxmox dentro un virtualenv.
@@ -116,7 +118,8 @@ Il server espone **53 tool**, divisi in gruppi. Un gruppo non configurato viene 
 - **Browser:** una sessione Chromium persistente gestita da Playwright. I cookie, ad esempio il consenso di Google, vengono salvati in `data/browser_state.json`. Ogni richiesta apre la propria pagina, fino a `BROWSER_MAX_PAGES` pagine in parallelo, e il browser si riavvia da solo se va in crash.
 - **Gestione degli errori:** ogni tool restituisce un messaggio leggibile dal modello, ad esempio "⚠️ Entità inesistente, usa hass_cerca_entita", invece di un traceback.
 - **Ciclo di vita:** all'avvio vengono ripristinati i timer e parte il monitor della musica. Allo spegnimento si chiudono browser, mpv e processi in background.
-- **Endpoint `/health`:** risponde senza autenticazione con lo stato e il numero di tool.
+- **Endpoint `/health`:** risponde senza autenticazione con lo stato, la versione (commit) e il numero di tool.
+- **Manutenzione automatica:** un minuto dopo l'avvio, e poi ogni 24 ore, il server cancella i file vecchi (log dei processi, screenshot, cache dell'agente) e scrive nel log quanto spazio occupa ogni cartella dei dati. I registri `invii.log` e `hass_audit.log` vengono ruotati oltre 5 MB. Lo spazio occupato si vede anche con `--check`.
 
 ### Cartella dati (`DATA_DIR`, default `./data`)
 ```
@@ -156,7 +159,7 @@ python3 -m venv /opt/mcp-server/venv
 ```
 
 ```bash
-/opt/mcp-server/venv/bin/pip install -r /opt/mcp-server/requirements.txt
+/opt/mcp-server/venv/bin/pip install -r /opt/mcp-server/requirements.lock
 ```
 
 Il browser per Playwright va installato in una cartella condivisa, così può usarlo anche l'utente non-root del servizio:
@@ -219,10 +222,10 @@ cd /opt/mcp-server && git stash && git pull
 **2. Aggiorna le dipendenze**
 
 ```bash
-/opt/mcp-server/venv/bin/pip install -U -r /opt/mcp-server/requirements.txt
+/opt/mcp-server/venv/bin/pip install -r /opt/mcp-server/requirements.lock && /opt/mcp-server/venv/bin/pip install -U yt-dlp
 ```
 
-`-U` aggiorna anche yt-dlp, che va tenuto aggiornato perché YouTube cambia spesso.
+`requirements.lock` contiene le versioni esatte provate con la suite di test: l'aggiornamento installa sempre una combinazione verificata. Solo yt-dlp va sempre all'ultima versione, perché YouTube cambia spesso.
 
 **3. Aggiorna il browser**
 
@@ -258,15 +261,23 @@ systemctl restart mcp-server && systemctl status mcp-server --no-pager
 journalctl -u mcp-server -n 30 --no-pager
 ```
 
-Nel log, la riga `Tool attivi (...)` elenca i tool caricati.
+Nel log, la riga `Server MCP versione main@1a2b3c4` indica il commit in esecuzione (lo stesso di `git log --oneline -1`) e `Tool attivi (...)` elenca i tool caricati. La versione si vede anche su `http://IP:8000/health`.
 
 **Tutto in un solo comando** (passi da 1 a 5):
 
 ```bash
-cd /opt/mcp-server && git pull && venv/bin/pip install -U -r requirements.txt && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright venv/bin/playwright install chromium && cp .env.example .env && cp deploy/mcp-server.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart mcp-server && journalctl -u mcp-server -n 30 --no-pager
+cd /opt/mcp-server && git pull && venv/bin/pip install -r requirements.lock && venv/bin/pip install -U yt-dlp && PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright venv/bin/playwright install chromium && cp .env.example .env && cp deploy/mcp-server.service /etc/systemd/system/ && systemctl daemon-reload && systemctl restart mcp-server && journalctl -u mcp-server -n 30 --no-pager
 ```
 
 > Usa questo comando solo dopo aver configurato le [variabili fisse](#variabili-fisse): altrimenti la copia di `.env.example` cancella le tue impostazioni dal `.env`.
+
+**Aggiornare le dipendenze** (per chi sviluppa): modifica `requirements.txt` se serve, poi rigenera il lock in un ambiente pulito, esegui i test e pubblica entrambi i file:
+
+```bash
+python3 -m venv /tmp/lock && /tmp/lock/bin/pip install -r requirements.txt && /tmp/lock/bin/pip freeze > requirements.lock
+```
+
+Ricorda di rimettere in cima al lock le righe di commento.
 
 **Tornare alla versione precedente** se qualcosa non va:
 
@@ -352,6 +363,16 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 | `TERMINAL_MAX_TIMEOUT` | `900` | Timeout massimo di un comando, in secondi |
 | `TERMINAL_SANDBOX` | `auto` | Sandbox bubblewrap per terminale ed `esegui_python`: `auto` (usala se disponibile), `obbligatoria` (senza sandbox il terminale non funziona), `disattivata`. Vedi [Sicurezza](#sicurezza) |
 | `DOWNLOAD_MAX_MB` | `200` | Dimensione massima di `scarica_file` |
+
+### Manutenzione
+| Variabile | Default | Descrizione |
+|---|---|---|
+| `REGISTRI_MAX_MB` / `REGISTRI_COPIE` | `5` / `3` | Rotazione di `invii.log` e `hass_audit.log`: dimensione massima e copie tenute |
+| `PULIZIA_GIORNI_PROCESSI` | `7` | Dopo quanti giorni cancellare i log dei processi in background |
+| `PULIZIA_GIORNI_SCREENSHOT` | `30` | Dopo quanti giorni cancellare gli screenshot (come la validità dei link) |
+| `PULIZIA_GIORNI_CACHE` | `30` | Dopo quanti giorni cancellare i file della cache nella home dell'agente |
+
+Valori `0` disattivano la relativa pulizia.
 | `OCR_LINGUE` | `ita+eng` | Lingue dell'OCR (pacchetti `tesseract-ocr-<lingua>`) |
 | `OCR_MAX_PAGINE` | `30` | Pagine massime riconosciute con l'OCR per ogni PDF scansionato |
 
@@ -730,7 +751,7 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 
 ### Cosa è confinato dal server
 - I **tool sui file** restano nel workspace: `../` e i symlink verso l'esterno sono bloccati.
-- I **tool web** accettano solo `http/https`, non raggiungono la rete locale (anche tramite redirect) e hanno limiti di dimensione.
+- I **tool web** accettano solo `http/https`, non raggiungono la rete locale (anche tramite redirect) e hanno limiti di dimensione. Il server si collega all'IP già verificato, quindi un DNS che cambia risposta tra il controllo e la connessione (*DNS rebinding*) non porta in rete locale.
 - I **comandi del terminale** girano in una sandbox (vedi sotto) e ricevono un ambiente senza `HASS_TOKEN`, `MCP_API_KEY`, `GOOGLE_*` e senza altre variabili con token o password.
 - La **calcolatrice** non usa `eval` e limita le espressioni troppo costose.
 
@@ -762,7 +783,7 @@ Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il t
    ```
    Il servizio in [`deploy/mcp-server.service`](deploy/mcp-server.service) usa `User=mcp`, `ProtectSystem=strict` e `NoNewPrivileges`; i segreti arrivano tramite `EnvironmentFile=-/etc/mcp-server/mcp-server.env`, che systemd legge come root.
 3. **Cartella dati e punti di montaggio.** Il server può scrivere solo in `/mnt`, dove sta la cartella dei dati (`DATA_DIR`, nelle variabili fisse), e nella home di `mcp`. `/media` e `/srv` sono nascoste all'intero processo del server (`TemporaryFileSystem=`). Vedi [Cartella dei dati](#cartella-dei-dati).
-4. **Firewall del container**, dall'interfaccia di Proxmox: consenti internet, Home Assistant (porta 8123), il DNS e, se lo usi, il gateway WhatsApp (OpenWA); blocca il resto della LAN, in particolare la porta 8006 di Proxmox e SSH.
+4. **Firewall del container:** vedi [Firewall del container](#firewall-del-container).
 5. **`MCP_API_KEY` sempre impostata**, altrimenti chiunque sulla rete può usare il terminale.
 6. Se il terminale non ti serve: `ENABLE_TERMINAL=false`.
 
@@ -782,17 +803,67 @@ La cartella dei dati si imposta con `DATA_DIR` nelle [variabili fisse](#variabil
 - **Se il disco non è montato,** il server scriverebbe nella cartella vuota sul disco del container: controlla che il disco sia montato prima di avviare il servizio.
 - **Per una cartella fuori da `/mnt`:** oltre a `DATA_DIR`, aggiungila a `ReadWritePaths` con un drop-in (`systemctl edit mcp-server`), che gli aggiornamenti non toccano.
 
+### Firewall del container
+Il terminale dell'agente ha accesso alla rete (serve per `git clone`, `pip`, `npm`), e senza firewall potrebbe raggiungere anche la tua rete locale: router, interfaccia di Proxmox, altri dispositivi. Il firewall di Proxmox limita il container a internet più i soli servizi della LAN che servono al server.
+
+**1. Abilita il firewall.** In Proxmox servono tre interruttori:
+- **Datacenter → Firewall → Opzioni → Firewall: Sì.** Proxmox continua a consentire interfaccia web e SSH dalla rete locale, ma prima di attivarlo verifica di avere un accesso di riserva (per esempio la console fisica).
+- **Container → Firewall → Opzioni → Firewall: Sì**, con *Criterio di ingresso* `DROP` e *Criterio di uscita* `ACCEPT`.
+- **Container → Rete → `net0` → spunta Firewall.**
+
+**2. Regole del container.** Sull'host Proxmox, in `/etc/pve/firewall/<ID>.fw` (dove `<ID>` è il numero del container), oppure dall'interfaccia (Container → Firewall → Aggiungi). L'esempio usa la rete `192.168.178.0/24`, il router `192.168.178.1` e Home Assistant su `192.168.178.48`: **adatta gli indirizzi alla tua rete**.
+
+```
+[OPTIONS]
+enable: 1
+policy_in: DROP
+policy_out: ACCEPT
+
+[RULES]
+IN ACCEPT -source 192.168.178.0/24 -p tcp -dport 8000 -log nolog # server MCP (OpenWebUI e browser)
+IN ACCEPT -source 192.168.178.0/24 -p tcp -dport 22 -log nolog # SSH per l'amministrazione
+OUT ACCEPT -dest 192.168.178.1 -p udp -dport 53 -log nolog # DNS del router
+OUT ACCEPT -dest 192.168.178.1 -p tcp -dport 53 -log nolog # DNS del router
+OUT ACCEPT -dest 192.168.178.48 -p tcp -dport 8123 -log nolog # Home Assistant
+OUT ACCEPT -dest 192.168.178.50 -p tcp -dport 2785 -log nolog # gateway OpenWA (se lo usi)
+OUT DROP -dest 10.0.0.0/8 -log nolog # resto della rete locale
+OUT DROP -dest 172.16.0.0/12 -log nolog
+OUT DROP -dest 192.168.0.0/16 -log nolog
+OUT DROP -dest 169.254.0.0/16 -log nolog
+```
+
+Le regole si applicano in ordine: le eccezioni (DNS, Home Assistant, OpenWA) vengono prima dei blocchi. Se il DNS del container non è il router, sostituisci il suo indirizzo, altrimenti il server non risolve più i nomi (errore `Could not resolve host`).
+
+**3. Verifica** dal terminale dell'agente, o come utente `mcp`:
+```bash
+runuser -u mcp -- curl -s -m 5 -o /dev/null -w "%{http_code}\n" https://github.com
+```
+```bash
+runuser -u mcp -- curl -s -m 5 -o /dev/null -w "%{http_code}\n" http://192.168.178.1 || echo "LAN bloccata"
+```
+Il primo deve rispondere `200` (o un altro codice HTTP), il secondo deve fallire.
+
+**Limite:** il firewall vale per tutto il container e non distingue il server dall'agente. Le porte aperte per il server (Home Assistant, OpenWA) sono raggiungibili anche dal terminale dell'agente, che però non ha i token e riceve solo errori di autenticazione. Il resto della rete locale è bloccato per entrambi.
+
 ---
 
 ## Test
 
-`tests/run_tests.py` avvia in locale un **Home Assistant finto**, un **sito web finto** (pagine, PDF, immagini, meteo, news, cambi) e il server, poi chiama i tool con un vero client MCP Streamable HTTP, come fa OpenWebUI. Non serve accesso a internet.
+La suite avvia in locale un **Home Assistant finto**, un **sito web finto** (pagine, PDF, immagini, meteo, news, cambi), API e gateway finti e il server, poi chiama i tool con un vero client MCP Streamable HTTP, come fa OpenWebUI. Non serve accesso a internet.
+
+```bash
+pip install pytest && pytest -v
+```
+
+pytest riporta un test per ogni area (web, GitHub, Home Assistant, sandbox, documenti...), con l'elenco dei controlli non superati. In alternativa, senza pytest e con tutti i dettagli:
 
 ```bash
 /opt/mcp-server/venv/bin/python tests/run_tests.py
 ```
 
-Copre 252 casi: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+A ogni push GitHub Actions esegue lint (`ruff`), formattazione e tutta la suite su Python 3.11 e 3.12 ([`.github/workflows/test.yml`](.github/workflows/test.yml)); lo stato è nel badge in cima a questo README.
+
+Copre 255 controlli: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF e anti DNS rebinding, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright e `mpv`. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
@@ -822,19 +893,23 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 │   ├── rubrica.py  email_smtp.py  whatsapp.py  github.py
 │   ├── home_assistant.py  timer.py  musica.py  calendario_google.py
 │   └── __init__.py            # ordine di registrazione degli strumenti
-├── requirements.txt
+├── requirements.txt           # dipendenze dirette
+├── requirements.lock          # versioni esatte provate (usate per installare)
+├── pyproject.toml             # configurazione di ruff e pytest
+├── .github/workflows/test.yml # test automatici su GitHub
 ├── .env.example               # impostazioni generali (copiate nel .env a ogni aggiornamento)
 ├── deploy/
 │   └── mcp-server.service     # unit systemd
 ├── tests/
-│   ├── run_tests.py           # test end-to-end
+│   ├── test_e2e.py            # un test pytest per ogni area
+│   ├── run_tests.py           # suite end-to-end
 │   ├── mocks.py               # Home Assistant, sito web, API e gateway finti
 │   └── documenti.py           # documenti di prova (Word, Excel, PowerPoint, PDF, ...)
 └── docs/
     └── MILESTONES.md          # attività svolte e prossimi passi
 ```
 
-Per aggiungere uno strumento: crea un modulo in `tools/` con le sue costanti (lette con `_env` da `nucleo.configurazione`), decora le funzioni con `@tool(...)` da `nucleo.server` e aggiungi il modulo a `tools/__init__.py`.
+Lo stile del codice è controllato con `ruff` (`ruff check . && ruff format .`). Per aggiungere uno strumento: crea un modulo in `tools/` con le sue costanti (lette con `env_str`, `env_int`, `env_bool` da `nucleo.configurazione`), decora le funzioni con `@tool(...)` da `nucleo.server` e aggiungi il modulo a `tools/__init__.py`.
 
 ## Problemi comuni
 

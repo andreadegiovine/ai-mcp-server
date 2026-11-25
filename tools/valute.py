@@ -1,10 +1,10 @@
 """Strumento: cambio valuta con i tassi BCE (Frankfurter)."""
+
 import asyncio
 import re
 
-from nucleo.server import UserError, tool
 from nucleo.rete import HTTP
-
+from nucleo.server import UserError, tool
 
 FRANKFURTER_URLS = ["https://api.frankfurter.dev/v1", "https://api.frankfurter.app"]
 
@@ -19,8 +19,10 @@ def _cambio(importo: float, da: str, a: str) -> str:
             r.raise_for_status()
             j = r.json()
             tasso = j["rates"][a]
-            return (f"{importo:,.2f} {da} = {importo * tasso:,.2f} {a}\n"
-                    f"Tasso: 1 {da} = {tasso} {a} (BCE, aggiornato al {j.get('date')})")
+            return (
+                f"{importo:,.2f} {da} = {importo * tasso:,.2f} {a}\n"
+                f"Tasso: 1 {da} = {tasso} {a} (BCE, aggiornato al {j.get('date')})"
+            )
         except UserError:
             raise
         except Exception as e:
@@ -31,7 +33,9 @@ def _cambio(importo: float, da: str, a: str) -> str:
 @tool(
     "converti_valuta",
     title="Converti valuta",
-    description="Converte un importo tra valute con i tassi ufficiali BCE aggiornati (codici ISO: EUR, USD, GBP, CHF, JPY...).",
+    description=(
+        "Converte un importo tra valute con i tassi ufficiali BCE aggiornati (codici ISO: EUR, USD, GBP, CHF, JPY...)."
+    ),
     read_only=True,
 )
 async def converti_valuta(importo: float, da: str, a: str) -> str:

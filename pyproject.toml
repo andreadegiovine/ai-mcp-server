@@ -1,0 +1,33 @@
+[project]
+name = "ai-mcp-server"
+description = "Server MCP per OpenWebUI con strumenti per web, casa, file, GitHub e comunicazioni"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["data", "venv"]
+
+[tool.ruff.lint]
+# E/W: stile, F: errori (pyflakes), I: ordine degli import, B: bug comuni, UP: sintassi moderna
+select = ["E", "W", "F", "I", "B", "UP"]
+ignore = [
+    "B008",   # chiamate nei valori di default (Field di pydantic)
+    "B904",   # i messaggi UserError sostituiscono volutamente l'errore originale (non deve arrivare al modello)
+    "E731",   # lambda assegnate (usate nei test)
+    "UP037",  # annotazioni tra virgolette per i tipi di Playwright, libreria facoltativa
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["E501", "E702", "E401", "E402", "B023"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["nucleo", "tools"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+filterwarnings = ["ignore:Use `streamable_http_client` instead:DeprecationWarning"]
+
+[tool.ruff.format]
+quote-style = "preserve"

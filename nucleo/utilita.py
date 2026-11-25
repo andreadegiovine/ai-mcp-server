@@ -1,4 +1,5 @@
-"""Utilita' comuni: date e durate in italiano, formattazione, archivio JSON."""
+"""Utilità comuni: date e durate in italiano, formattazione, archivio JSON."""
+
 import contextlib
 import json
 import os
@@ -8,16 +9,27 @@ import time
 import unicodedata
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 from nucleo.configurazione import TZ, logger
 from nucleo.server import UserError
 
-
 GIORNI = ["lunedì", "martedì", "mercoledì", "giovedì", "venerdì", "sabato", "domenica"]
 GIORNI_BREVI = ["lun", "mar", "mer", "gio", "ven", "sab", "dom"]
-MESI = ["gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio",
-        "agosto", "settembre", "ottobre", "novembre", "dicembre"]
+MESI = [
+    "gennaio",
+    "febbraio",
+    "marzo",
+    "aprile",
+    "maggio",
+    "giugno",
+    "luglio",
+    "agosto",
+    "settembre",
+    "ottobre",
+    "novembre",
+    "dicembre",
+]
 
 
 def now() -> datetime:
@@ -107,7 +119,7 @@ class JsonStore:
 _RE_ORA = re.compile(r"^(\d{1,2})(?:[:.](\d{2}))?(?:[:.](\d{2}))?$")
 
 
-def _parse_ora(s: str) -> Optional[tuple[int, int, int]]:
+def _parse_ora(s: str) -> tuple[int, int, int] | None:
     s = s.strip().lower().replace("alle ", "").replace("ore ", "").strip()
     m = _RE_ORA.match(s)
     if not m:
@@ -118,7 +130,7 @@ def _parse_ora(s: str) -> Optional[tuple[int, int, int]]:
     return h, mi, se
 
 
-def parse_data_ora(testo: str, *, riferimento: Optional[datetime] = None) -> tuple[datetime, bool]:
+def parse_data_ora(testo: str, *, riferimento: datetime | None = None) -> tuple[datetime, bool]:
     """
     Interpreta date/ore in formati comuni. Ritorna (datetime aware, ha_orario).
     Esempi: "2026-11-18 15:30", "2026-11-18T15:30:00+01:00", "18/11/2026 15:30", "18/11",
@@ -143,13 +155,13 @@ def parse_data_ora(testo: str, *, riferimento: Optional[datetime] = None) -> tup
     low = re.sub(r"\b(alle|all|ore|dalle|h)\b", " ", low)
     low = re.sub(r"\s+", " ", low).strip()
 
-    giorno: Optional[date] = None
+    giorno: date | None = None
     resto = low
     relativi = {"oggi": 0, "stasera": 0, "stanotte": 0, "domani": 1, "dopodomani": 2, "ieri": -1}
     for parola, off in sorted(relativi.items(), key=lambda x: -len(x[0])):
         if resto.startswith(parola):
             giorno = rif.date() + timedelta(days=off)
-            resto = resto[len(parola):].strip()
+            resto = resto[len(parola) :].strip()
             break
     if giorno is None:
         nomi = [normalizza(g) for g in GIORNI]
@@ -160,7 +172,7 @@ def parse_data_ora(testo: str, *, riferimento: Optional[datetime] = None) -> tup
                 if diff == 0 and m.group(1):
                     diff = 7
                 giorno = rif.date() + timedelta(days=diff)
-                resto = resto[m.end():].strip()
+                resto = resto[m.end() :].strip()
                 break
     if giorno is None:
         m = re.match(r"^(\d{1,2})[/\-](\d{1,2})(?:[/\-](\d{2,4}))?\b", resto)
@@ -175,7 +187,7 @@ def parse_data_ora(testo: str, *, riferimento: Optional[datetime] = None) -> tup
                 raise UserError(f"Data non valida '{testo}': {e}")
             if not m.group(3) and giorno < rif.date() - timedelta(days=1):
                 giorno = giorno.replace(year=y + 1)
-            resto = resto[m.end():].strip()
+            resto = resto[m.end() :].strip()
 
     ora = _parse_ora(resto) if resto else None
     if resto and ora is None:
@@ -196,10 +208,28 @@ _RE_DURATA = re.compile(
     re.I,
 )
 _UNITA = {
-    "giorni": 86400, "giorno": 86400, "gg": 86400, "g": 86400, "d": 86400,
-    "ore": 3600, "ora": 3600, "hours": 3600, "hour": 3600, "hrs": 3600, "hr": 3600, "h": 3600,
-    "minuti": 60, "minuto": 60, "mins": 60, "min": 60, "m": 60,
-    "secondi": 1, "secondo": 1, "secs": 1, "sec": 1, "s": 1,
+    "giorni": 86400,
+    "giorno": 86400,
+    "gg": 86400,
+    "g": 86400,
+    "d": 86400,
+    "ore": 3600,
+    "ora": 3600,
+    "hours": 3600,
+    "hour": 3600,
+    "hrs": 3600,
+    "hr": 3600,
+    "h": 3600,
+    "minuti": 60,
+    "minuto": 60,
+    "mins": 60,
+    "min": 60,
+    "m": 60,
+    "secondi": 1,
+    "secondo": 1,
+    "secs": 1,
+    "sec": 1,
+    "s": 1,
 }
 
 

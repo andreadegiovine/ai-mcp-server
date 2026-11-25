@@ -1,30 +1,27 @@
 """Invii verso l'esterno (email, WhatsApp, GitHub): conferma obbligatoria, allegati, registro."""
+
 import asyncio
-import contextlib
 import mimetypes
 import re
 import secrets
 import time
 from pathlib import Path
-from typing import Optional, Union
 from urllib.parse import urlparse
 
 from mcp.server.fastmcp import Context
 
-from nucleo.configurazione import _env_int, ELICITATION_TIMEOUT, DATA_DIR, logger
+from nucleo.configurazione import DATA_DIR, ELICITATION_TIMEOUT, env_int, logger
+from nucleo.manutenzione import scrivi_registro
+from nucleo.rete import controlla_url, http_get
 from nucleo.server import UserError, client_supporta_moduli
 from nucleo.utilita import now
-from nucleo.rete import controlla_url, http_get
 from nucleo.workspace import percorso_workspace
 
-
-ALLEGATI_MAX_MB = _env_int("ALLEGATI_MAX_MB", 20)
+ALLEGATI_MAX_MB = env_int("ALLEGATI_MAX_MB", 20)
 
 
 def registra_invio(testo: str) -> None:
-    with contextlib.suppress(Exception):
-        with open(DATA_DIR / "invii.log", "a", encoding="utf-8") as fh:
-            fh.write(f"{now().isoformat(timespec='seconds')} {testo}\n")
+    scrivi_registro(DATA_DIR / "invii.log", f"{now().isoformat(timespec='seconds')} {testo}")
 
 
 _IN_ATTESA: dict[str, dict] = {}
@@ -43,21 +40,23 @@ def crea_attesa(tipo: str, dati: dict) -> str:
 def prendi_attesa(codice: str, tipo: str) -> dict:
     voce = _IN_ATTESA.get(codice.strip().upper())
     if not voce or voce["tipo"] != tipo or voce["scade"] < time.time():
-        raise UserError("Codice di conferma non valido, gia' usato o scaduto: prepara di nuovo l'invio "
-                        "e chiedi conferma all'utente.")
+        raise UserError(
+            "Codice di conferma non valido, già usato o scaduto: prepara di nuovo l'invio e chiedi conferma all'utente."
+        )
     _IN_ATTESA.pop(codice.strip().upper(), None)
     return voce["dati"]
 
 
-async def conferma_interattiva(ctx: Optional[Context], messaggio: str) -> Optional[bool]:
+async def conferma_interattiva(ctx: Context | None, messaggio: str) -> bool | None:
     """Chiede conferma con un modulo (elicitation). None = modulo non disponibile."""
     if not client_supporta_moduli(ctx):
         return None
     from pydantic import Field, create_model
+
     modello = create_model("Conferma", conferma=(bool, Field(title="Confermi l'invio?")))
     try:
         esito = await asyncio.wait_for(ctx.elicit(messaggio, modello), ELICITATION_TIMEOUT)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         return False
     except Exception as e:
         logger.warning(f"Conferma con modulo non riuscita, uso la conferma in chat: {e}")
@@ -65,8 +64,9 @@ async def conferma_interattiva(ctx: Optional[Context], messaggio: str) -> Option
     return esito.action == "accept" and bool(getattr(esito.data, "conferma", False))
 
 
-async def chiedi_conferma(ctx: Optional[Context], tipo: str, dati: dict, frase: str, anteprima: str,
-                           nome_tool: str) -> Optional[str]:
+async def chiedi_conferma(
+    ctx: Context | None, tipo: str, dati: dict, frase: str, anteprima: str, nome_tool: str
+) -> str | None:
     """None = confermato (procedi con l'invio); altrimenti il testo da restituire al modello."""
     esito = await conferma_interattiva(ctx, f"{frase}\n\n{anteprima}")
     if esito is True:
@@ -84,7 +84,7 @@ async def chiedi_conferma(ctx: Optional[Context], tipo: str, dati: dict, frase: 
     )
 
 
-def controlla_allegati(allegati: list[str], base: Optional[Path] = None) -> list[str]:
+def controlla_allegati(allegati: list[str], base: Path | None = None) -> list[str]:
     """Verifica gli allegati: gli URL restano tali, i file locali diventano percorsi assoluti nel workspace."""
     puliti = []
     for a in allegati[:10]:
@@ -120,7 +120,7 @@ def carica_allegato(sorgente: str, max_bytes: int) -> tuple[bytes, str, str]:
     return dati, nome, mime
 
 
-def lista_testi(valore: Union[list[str], str, None]) -> list[str]:
+def lista_testi(valore: list[str] | str | None) -> list[str]:
     if not valore:
         return []
     if isinstance(valore, list):

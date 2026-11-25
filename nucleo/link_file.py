@@ -1,11 +1,12 @@
 """
 Link HTTP firmati ai file del workspace, per mostrarli nel client (immagini, PDF, documenti).
 
-Il client (es. OpenWebUI nel browser) non puo' aprire un percorso locale del server: il server pubblica
-quindi il file su /file/<token>/<nome>, dove il token contiene il percorso relativo e la scadenza ed e'
-firmato con HMAC. Il link funziona senza chiave API (un tag <img> non puo' inviarla), ma non si puo'
-falsificare ne' modificare per leggere altri file.
+Il client (es. OpenWebUI nel browser) non può aprire un percorso locale del server: il server pubblica
+quindi il file su /file/<token>/<nome>, dove il token contiene il percorso relativo e la scadenza ed è
+firmato con HMAC. Il link funziona senza chiave API (un tag <img> non può inviarla), ma non si può
+falsificare né modificare per leggere altri file.
 """
+
 import base64
 import hashlib
 import hmac
@@ -14,23 +15,22 @@ import os
 import secrets
 import time
 from pathlib import Path
-from typing import Optional
 from urllib.parse import quote
 
-from nucleo.configurazione import DATA_DIR, WORKSPACE_DIR, _env, _env_int, logger
+from nucleo.configurazione import DATA_DIR, WORKSPACE_DIR, env_int, env_str, logger
 from nucleo.server import UserError, mcp
 
 # Indirizzo del server nei link. Facoltativo: di norma si usa quello con cui il client ha raggiunto il server
 # (preso dalla richiesta). Serve solo se il client usa un indirizzo che il browser non raggiunge (es. un nome
 # interno di Docker): in quel caso indica l'indirizzo per il browser, es. http://192.168.1.11:8000
-MCP_URL_PUBBLICO = _env("MCP_URL_PUBBLICO").rstrip("/")
-LINK_FILE_GIORNI = _env_int("LINK_FILE_GIORNI", 30)
-LINK_FILE_SEGRETO = _env("LINK_FILE_SEGRETO")
+MCP_URL_PUBBLICO = env_str("MCP_URL_PUBBLICO").rstrip("/")
+LINK_FILE_GIORNI = env_int("LINK_FILE_GIORNI", 30)
+LINK_FILE_SEGRETO = env_str("LINK_FILE_SEGRETO")
 PREFISSO_ROTTA = "/file/"
 
 _ESTENSIONI_IMMAGINE = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 _INLINE = {"image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "application/pdf", "text/plain"}
-_chiave_cache: Optional[bytes] = None
+_chiave_cache: bytes | None = None
 
 
 def _chiave() -> bytes:
@@ -72,8 +72,8 @@ def url_base(ctx=None) -> str:
         return ""
 
 
-def crea_link(percorso: Path, giorni: Optional[int] = None, ctx=None) -> Optional[str]:
-    """URL firmato per un file del workspace; None se l'indirizzo del server non e' noto."""
+def crea_link(percorso: Path, giorni: int | None = None, ctx=None) -> str | None:
+    """URL firmato per un file del workspace; None se l'indirizzo del server non è noto."""
     base = url_base(ctx)
     if not base:
         return None
@@ -86,7 +86,7 @@ def crea_link(percorso: Path, giorni: Optional[int] = None, ctx=None) -> Optiona
     return f"{base}{PREFISSO_ROTTA}{token}/{quote(reale.name)}"
 
 
-def markdown_file(percorso: Path, descrizione: str = "", ctx=None) -> Optional[str]:
+def markdown_file(percorso: Path, descrizione: str = "", ctx=None) -> str | None:
     """Markdown per mostrare il file nella chat: immagine per le immagini, link per gli altri file."""
     url = crea_link(percorso, ctx=ctx)
     if not url:
@@ -100,7 +100,7 @@ def nota_link(percorso: Path, descrizione: str = "", ctx=None) -> str:
     md = markdown_file(percorso, descrizione, ctx)
     if md:
         return f"Per mostrarlo all'utente scrivi nella risposta: {md}"
-    return ("(Link al file non disponibile: non usare il percorso locale come link, il client non puo' aprirlo.)")
+    return "(Link al file non disponibile: non usare il percorso locale come link, il client non può aprirlo.)"
 
 
 def _verifica_token(token: str) -> Path:
@@ -123,6 +123,7 @@ def _verifica_token(token: str) -> Path:
 @mcp.custom_route(PREFISSO_ROTTA + "{token}/{nome}", methods=["GET", "HEAD"])
 async def servi_file(request):
     from starlette.responses import FileResponse, PlainTextResponse
+
     try:
         percorso = _verifica_token(request.path_params["token"])
     except TimeoutError:
@@ -130,11 +131,18 @@ async def servi_file(request):
     except Exception:
         return PlainTextResponse("Link non valido", status_code=403)
     if not percorso.is_file():
-        return PlainTextResponse("File non piu' disponibile", status_code=404)
+        return PlainTextResponse("File non più disponibile", status_code=404)
     tipo = mimetypes.guess_type(percorso.name)[0] or "application/octet-stream"
     disposizione = "inline" if tipo in _INLINE else "attachment"
     logger.info(f"File servito tramite link: {percorso.relative_to(WORKSPACE_DIR)}")
     return FileResponse(
-        percorso, media_type=tipo, filename=percorso.name, content_disposition_type=disposizione,
-        headers={"Cache-Control": "private, max-age=3600", "X-Content-Type-Options": "nosniff",
-                 "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox"})
+        percorso,
+        media_type=tipo,
+        filename=percorso.name,
+        content_disposition_type=disposizione,
+        headers={
+            "Cache-Control": "private, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'; sandbox",
+        },
+    )

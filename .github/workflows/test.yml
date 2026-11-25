@@ -1,0 +1,43 @@
+name: Test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+          cache-dependency-path: requirements.lock
+
+      - name: Pacchetti di sistema (musica, sandbox, OCR, LibreOffice)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mpv bubblewrap tesseract-ocr tesseract-ocr-ita \
+            libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui fonts-dejavu-core
+          # Ubuntu 24.04 blocca i namespace utente non privilegiati usati dalla sandbox bubblewrap
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Dipendenze Python
+        run: |
+          pip install -r requirements.lock pytest ruff
+          python -m playwright install --with-deps chromium
+
+      - name: Lint e formattazione
+        run: |
+          ruff check .
+          ruff format --check .
+
+      - name: Test
+        run: pytest -v

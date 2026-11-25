@@ -6,6 +6,30 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-25 · Revisione del codice: sicurezza, affidabilità, voce, qualità
+
+### Attività svolte
+- ✅ **Firewall del container** (proposta 1a): README con la configurazione del firewall di Proxmox che limita il container a internet più DNS, Home Assistant e OpenWA, e con la verifica; documentato il limite (server e agente condividono la rete del container)
+- ✅ **Anti DNS rebinding**: le richieste dei tool web si collegano all'IP già verificato (header Host, SNI e certificato restano sul nome originale); trovato e corretto un difetto per cui con `NO_PROXY` impostato la protezione restava inattiva
+- ✅ **Versioni bloccate**: `requirements.lock` (provato con la suite, installabile su Python 3.11, 3.12 e 3.13), usato da installazione e aggiornamento; solo yt-dlp sempre all'ultima versione
+- ✅ **Nessun blocco del server**: letture, scritture e scansioni di file dei tool spostate in thread
+- ✅ **Manutenzione automatica**: rotazione di `invii.log` e `hass_audit.log`, pulizia giornaliera di log dei processi, screenshot e cache dell'agente, spazio occupato nel log e in `--check`
+- ✅ **Testi per la voce**: accenti veri al posto degli apostrofi (`è`, `più`, `già`...), niente emoji né punti elenco nei testi restituiti al modello
+- ✅ **Qualità del codice**: nomi condivisi resi pubblici (`env_str`, `accetta_cookie`, `client_hass`...), `hass_esegui_servizio` divisa in funzioni, `ruff` per lint e formattazione (`pyproject.toml`)
+- ✅ **Test**: pytest con un test per ogni area (20 aree), GitHub Actions su Python 3.11 e 3.12 con lint, formattazione e sandbox attiva (**255/255 controlli superati**)
+- ✅ **Versione visibile**: commit in esecuzione nel log di avvio, in `/health` e in `--check`
+
+### Decisioni prese
+- La suite resta un'unica sequenza (gli scenari dipendono l'uno dall'altro); pytest la divide per aree invece che per file
+- La versione si legge dai file di `.git` senza eseguire git, che rifiuterebbe un repository di proprietà di un altro utente
+
+### Prossimi passi
+- ⏳ **Chiave API obbligatoria per tutto il server** (proposta 2), da attivare al termine dello sviluppo
+- ⏳ Verificare il primo esito di GitHub Actions e il firewall sul container reale
+- 💡 Isolare la rete della sandbox dal resto del container (namespace di rete dedicato), così l'agente non raggiunge nemmeno Home Assistant e OpenWA
+
+---
+
 ## 2026-11-24 · Ambienti di sviluppo per l'agente
 
 ### Problema

@@ -1,4 +1,5 @@
 """Strumento: calcolatrice sicura (senza eval)."""
+
 import ast
 import math
 import operator
@@ -16,8 +17,7 @@ def _pow_sicura(a, b):
 
 
 def _mul_sicura(a, b):
-    if isinstance(a, int) and isinstance(b, int) and a and b and \
-            (abs(a).bit_length() + abs(b).bit_length()) > 200000:
+    if isinstance(a, int) and isinstance(b, int) and a and b and (abs(a).bit_length() + abs(b).bit_length()) > 200000:
         raise ValueError("risultato troppo grande")
     return operator.mul(a, b)
 
@@ -29,20 +29,53 @@ def _fattoriale(n):
 
 
 _OPERATORI = {
-    ast.Add: operator.add, ast.Sub: operator.sub, ast.Mult: _mul_sicura, ast.Div: operator.truediv,
-    ast.FloorDiv: operator.floordiv, ast.Mod: operator.mod, ast.Pow: _pow_sicura,
-    ast.USub: operator.neg, ast.UAdd: operator.pos,
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: _mul_sicura,
+    ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: _pow_sicura,
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
 }
 _FUNZIONI = {
-    "sqrt": math.sqrt, "radice": math.sqrt, "cbrt": lambda x: math.copysign(abs(x) ** (1 / 3), x),
-    "sin": math.sin, "cos": math.cos, "tan": math.tan, "asin": math.asin, "acos": math.acos,
-    "atan": math.atan, "atan2": math.atan2, "sinh": math.sinh, "cosh": math.cosh, "tanh": math.tanh,
-    "log": math.log, "ln": math.log, "log10": math.log10, "log2": math.log2, "exp": math.exp,
-    "abs": abs, "round": round, "floor": math.floor, "ceil": math.ceil, "trunc": math.trunc,
-    "factorial": _fattoriale, "fattoriale": _fattoriale, "gcd": math.gcd, "lcm": math.lcm,
-    "hypot": math.hypot, "degrees": math.degrees, "radians": math.radians,
-    "min": min, "max": max, "sum": lambda *a: sum(a), "media": lambda *a: sum(a) / len(a),
-    "comb": math.comb, "perm": math.perm,
+    "sqrt": math.sqrt,
+    "radice": math.sqrt,
+    "cbrt": lambda x: math.copysign(abs(x) ** (1 / 3), x),
+    "sin": math.sin,
+    "cos": math.cos,
+    "tan": math.tan,
+    "asin": math.asin,
+    "acos": math.acos,
+    "atan": math.atan,
+    "atan2": math.atan2,
+    "sinh": math.sinh,
+    "cosh": math.cosh,
+    "tanh": math.tanh,
+    "log": math.log,
+    "ln": math.log,
+    "log10": math.log10,
+    "log2": math.log2,
+    "exp": math.exp,
+    "abs": abs,
+    "round": round,
+    "floor": math.floor,
+    "ceil": math.ceil,
+    "trunc": math.trunc,
+    "factorial": _fattoriale,
+    "fattoriale": _fattoriale,
+    "gcd": math.gcd,
+    "lcm": math.lcm,
+    "hypot": math.hypot,
+    "degrees": math.degrees,
+    "radians": math.radians,
+    "min": min,
+    "max": max,
+    "sum": lambda *a: sum(a),
+    "media": lambda *a: sum(a) / len(a),
+    "comb": math.comb,
+    "perm": math.perm,
 }
 _COSTANTI = {"pi": math.pi, "pigreco": math.pi, "e": math.e, "tau": math.tau, "inf": math.inf}
 
@@ -56,8 +89,13 @@ def _valuta(nodo):
         return _OPERATORI[type(nodo.op)](_valuta(nodo.operand))
     if isinstance(nodo, ast.Name) and nodo.id in _COSTANTI:
         return _COSTANTI[nodo.id]
-    if isinstance(nodo, ast.Call) and isinstance(nodo.func, ast.Name) and nodo.func.id in _FUNZIONI \
-            and not nodo.keywords and len(nodo.args) <= 50:
+    if (
+        isinstance(nodo, ast.Call)
+        and isinstance(nodo.func, ast.Name)
+        and nodo.func.id in _FUNZIONI
+        and not nodo.keywords
+        and len(nodo.args) <= 50
+    ):
         return _FUNZIONI[nodo.func.id](*[_valuta(a) for a in nodo.args])
     raise ValueError(f"elemento non consentito: {ast.dump(nodo)[:60]}")
 

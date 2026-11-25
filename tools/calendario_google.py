@@ -1,24 +1,25 @@
 """Strumenti: Google Calendar (eventi: elenco, creazione, modifica, eliminazione)."""
+
 import asyncio
 import re
 import threading
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from nucleo.configurazione import _env, _env_bool, _env_list, DATA_DIR, TZ_NAME, TZ
+from nucleo.configurazione import DATA_DIR, TZ, TZ_NAME, env_bool, env_lista, env_str
 from nucleo.server import FUNZIONALITA, UserError, tool
-from nucleo.utilita import GIORNI_BREVI, now, tronca, fmt_dt, parse_data_ora
+from nucleo.utilita import GIORNI_BREVI, fmt_dt, now, parse_data_ora, tronca
 
-
-GOOGLE_SA_FILE = _env("GOOGLE_SERVICE_ACCOUNT_FILE")
-GOOGLE_TOKEN_FILE = _env("GOOGLE_OAUTH_TOKEN_FILE", str(DATA_DIR / "google_token.json"))
-GOOGLE_CALENDAR_IDS = _env_list("GOOGLE_CALENDAR_IDS", "primary")
-GOOGLE_DELEGATED_USER = _env("GOOGLE_DELEGATED_USER")
+GOOGLE_SA_FILE = env_str("GOOGLE_SERVICE_ACCOUNT_FILE")
+GOOGLE_TOKEN_FILE = env_str("GOOGLE_OAUTH_TOKEN_FILE", str(DATA_DIR / "google_token.json"))
+GOOGLE_CALENDAR_IDS = env_lista("GOOGLE_CALENDAR_IDS", "primary")
+GOOGLE_DELEGATED_USER = env_str("GOOGLE_DELEGATED_USER")
 GOOGLE_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
-FUNZIONALITA["calendar"] = _env_bool("ENABLE_CALENDAR", True) and (
-    bool(GOOGLE_SA_FILE and Path(GOOGLE_SA_FILE).is_file()) or Path(GOOGLE_TOKEN_FILE).is_file())
+FUNZIONALITA["calendar"] = env_bool("ENABLE_CALENDAR", True) and (
+    bool(GOOGLE_SA_FILE and Path(GOOGLE_SA_FILE).is_file()) or Path(GOOGLE_TOKEN_FILE).is_file()
+)
 
 
 class GoogleCalendar:
@@ -28,17 +29,19 @@ class GoogleCalendar:
 
     def _crea_servizio(self):
         try:
-            from googleapiclient.discovery import build
             from google.auth.transport.requests import Request
+            from googleapiclient.discovery import build
         except ImportError:
             raise UserError("Installa google-api-python-client e google-auth per usare il calendario.")
         if GOOGLE_SA_FILE and Path(GOOGLE_SA_FILE).is_file():
             from google.oauth2 import service_account
+
             creds = service_account.Credentials.from_service_account_file(GOOGLE_SA_FILE, scopes=GOOGLE_SCOPES)
             if GOOGLE_DELEGATED_USER:
                 creds = creds.with_subject(GOOGLE_DELEGATED_USER)
         elif Path(GOOGLE_TOKEN_FILE).is_file():
             from google.oauth2.credentials import Credentials
+
             creds = Credentials.from_authorized_user_file(GOOGLE_TOKEN_FILE, GOOGLE_SCOPES)
             if not creds.valid and creds.refresh_token:
                 creds.refresh(Request())
@@ -59,7 +62,9 @@ class GoogleCalendar:
             except Exception as e:
                 stato = getattr(getattr(e, "resp", None), "status", None)
                 if stato == 404:
-                    raise UserError("Calendario o evento non trovato (controlla l'ID e la condivisione col service account).")
+                    raise UserError(
+                        "Calendario o evento non trovato (controlla l'ID e la condivisione col service account)."
+                    )
                 if stato in (401, 403):
                     raise UserError(f"Accesso negato a Google Calendar: {e}")
                 raise
@@ -85,14 +90,16 @@ def _formatta_evento(ev: dict, cal: str) -> str:
     fine, _ = _evento_dt(ev["end"])
     if intero:
         giorni = (fine - inizio).days
-        quando = f"{GIORNI_BREVI[inizio.weekday()]} {inizio:%d/%m/%Y} (tutto il giorno" + \
-                 (f", {giorni} giorni)" if giorni > 1 else ")")
+        quando = f"{GIORNI_BREVI[inizio.weekday()]} {inizio:%d/%m/%Y} (tutto il giorno" + (
+            f", {giorni} giorni)" if giorni > 1 else ")"
+        )
     else:
-        quando = f"{GIORNI_BREVI[inizio.weekday()]} {inizio:%d/%m/%Y %H:%M}–" + \
-                 (f"{fine:%H:%M}" if fine.date() == inizio.date() else f"{fine:%d/%m %H:%M}")
-    riga = f"• {quando} · {ev.get('summary', '(senza titolo)')}"
+        quando = f"{GIORNI_BREVI[inizio.weekday()]} {inizio:%d/%m/%Y %H:%M}–" + (
+            f"{fine:%H:%M}" if fine.date() == inizio.date() else f"{fine:%d/%m %H:%M}"
+        )
+    riga = f"- {quando} · {ev.get('summary', '(senza titolo)')}"
     if ev.get("location"):
-        riga += f" · 📍 {ev['location']}"
+        riga += f" · luogo: {ev['location']}"
     if ev.get("description"):
         riga += f"\n    {tronca(re.sub(r'<[^>]+>', ' ', ev['description']).strip(), 200)}"
     riga += f"\n    [id: {ev['id']} · calendario: {cal}]"
@@ -109,8 +116,7 @@ def _formatta_evento(ev: dict, cal: str) -> str:
     group="calendar",
     read_only=True,
 )
-async def calendario_eventi(da: str = "", a: str = "", giorni: int = 7, cerca: str = "",
-                            calendario: str = "") -> str:
+async def calendario_eventi(da: str = "", a: str = "", giorni: int = 7, cerca: str = "", calendario: str = "") -> str:
     inizio = parse_data_ora(da)[0] if da.strip() else now()
     if a.strip():
         fine, ha_ora = parse_data_ora(a)
@@ -125,8 +131,14 @@ async def calendario_eventi(da: str = "", a: str = "", giorni: int = 7, cerca: s
     errori = []
     for cal in cals:
         try:
-            params = dict(calendarId=cal, timeMin=inizio.isoformat(), timeMax=fine.isoformat(), singleEvents=True,
-                          orderBy="startTime", maxResults=100)
+            params = dict(
+                calendarId=cal,
+                timeMin=inizio.isoformat(),
+                timeMax=fine.isoformat(),
+                singleEvents=True,
+                orderBy="startTime",
+                maxResults=100,
+            )
             if cerca.strip():
                 params["q"] = cerca.strip()
             res = await asyncio.to_thread(CALENDARIO.esegui, lambda s, p=params: s.events().list(**p))
@@ -139,8 +151,12 @@ async def calendario_eventi(da: str = "", a: str = "", giorni: int = 7, cerca: s
     intest = f"Eventi dal {fmt_dt(inizio)} al {fmt_dt(fine)}" + (f" con '{cerca}'" if cerca else "")
     if not tutti:
         return intest + ": nessun evento." + (("\nErrori: " + "; ".join(errori)) if errori else "")
-    return intest + f" ({len(tutti)}):\n" + "\n".join(_formatta_evento(ev, cal) for _, ev, cal in tutti) + \
-        (("\nErrori: " + "; ".join(errori)) if errori else "")
+    return (
+        intest
+        + f" ({len(tutti)}):\n"
+        + "\n".join(_formatta_evento(ev, cal) for _, ev, cal in tutti)
+        + (("\nErrori: " + "; ".join(errori)) if errori else "")
+    )
 
 
 def _corpo_tempi(inizio: str, fine: str, durata_minuti: int, tutto_il_giorno: bool) -> tuple[dict, dict]:
@@ -158,8 +174,7 @@ def _corpo_tempi(inizio: str, fine: str, durata_minuti: int, tutto_il_giorno: bo
         dt_f = dt_i + timedelta(minutes=max(1, int(durata_minuti or 60)))
     if dt_f <= dt_i:
         raise UserError("La fine deve essere successiva all'inizio.")
-    return ({"dateTime": dt_i.isoformat(), "timeZone": TZ_NAME},
-            {"dateTime": dt_f.isoformat(), "timeZone": TZ_NAME})
+    return ({"dateTime": dt_i.isoformat(), "timeZone": TZ_NAME}, {"dateTime": dt_f.isoformat(), "timeZone": TZ_NAME})
 
 
 @tool(
@@ -172,11 +187,19 @@ def _corpo_tempi(inizio: str, fine: str, durata_minuti: int, tutto_il_giorno: bo
     ),
     group="calendar",
 )
-async def calendario_crea_evento(titolo: str, inizio: str, fine: str = "", durata_minuti: int = 60,
-                                 tutto_il_giorno: bool = False, descrizione: str = "", luogo: str = "",
-                                 promemoria_minuti: Optional[int] = None, calendario: str = "") -> str:
+async def calendario_crea_evento(
+    titolo: str,
+    inizio: str,
+    fine: str = "",
+    durata_minuti: int = 60,
+    tutto_il_giorno: bool = False,
+    descrizione: str = "",
+    luogo: str = "",
+    promemoria_minuti: int | None = None,
+    calendario: str = "",
+) -> str:
     if not titolo.strip():
-        raise UserError("Il titolo e' obbligatorio.")
+        raise UserError("Il titolo è obbligatorio.")
     start, end = _corpo_tempi(inizio, fine, durata_minuti, tutto_il_giorno)
     corpo: dict[str, Any] = {"summary": titolo.strip(), "start": start, "end": end}
     if descrizione:
@@ -184,11 +207,17 @@ async def calendario_crea_evento(titolo: str, inizio: str, fine: str = "", durat
     if luogo:
         corpo["location"] = luogo
     if promemoria_minuti is not None:
-        corpo["reminders"] = {"useDefault": False,
-                              "overrides": [{"method": "popup", "minutes": max(0, int(promemoria_minuti))}]}
+        corpo["reminders"] = {
+            "useDefault": False,
+            "overrides": [{"method": "popup", "minutes": max(0, int(promemoria_minuti))}],
+        }
     cal = _cal_id(calendario)
     ev = await asyncio.to_thread(CALENDARIO.esegui, lambda s: s.events().insert(calendarId=cal, body=corpo))
-    return "✅ Evento creato:\n" + _formatta_evento(ev, cal) + (f"\n    link: {ev.get('htmlLink')}" if ev.get("htmlLink") else "")
+    return (
+        "Evento creato:\n"
+        + _formatta_evento(ev, cal)
+        + (f"\n    link: {ev.get('htmlLink')}" if ev.get("htmlLink") else "")
+    )
 
 
 @tool(
@@ -200,9 +229,15 @@ async def calendario_crea_evento(titolo: str, inizio: str, fine: str = "", durat
     ),
     group="calendar",
 )
-async def calendario_modifica_evento(event_id: str, titolo: str = "", inizio: str = "", fine: str = "",
-                                     descrizione: Optional[str] = None, luogo: Optional[str] = None,
-                                     calendario: str = "") -> str:
+async def calendario_modifica_evento(
+    event_id: str,
+    titolo: str = "",
+    inizio: str = "",
+    fine: str = "",
+    descrizione: str | None = None,
+    luogo: str | None = None,
+    calendario: str = "",
+) -> str:
     cal = _cal_id(calendario)
     patch: dict[str, Any] = {}
     if titolo.strip():
@@ -218,16 +253,20 @@ async def calendario_modifica_evento(event_id: str, titolo: str = "", inizio: st
         durata = int((vecchio_f - vecchio_i).total_seconds() // 60)
         if intero:
             i_txt = inizio.strip() or vecchio_i.date().isoformat()
-            f_txt = fine.strip() or (parse_data_ora(i_txt)[0].date() + timedelta(days=max(1, durata // 1440) - 1)).isoformat()
+            f_txt = (
+                fine.strip()
+                or (parse_data_ora(i_txt)[0].date() + timedelta(days=max(1, durata // 1440) - 1)).isoformat()
+            )
             patch["start"], patch["end"] = _corpo_tempi(i_txt, f_txt, 0, True)
         else:
             i_txt = inizio.strip() or vecchio_i.isoformat()
             patch["start"], patch["end"] = _corpo_tempi(i_txt, fine, durata, False)
     if not patch:
         raise UserError("Nessuna modifica indicata.")
-    ev = await asyncio.to_thread(CALENDARIO.esegui,
-                                 lambda s: s.events().patch(calendarId=cal, eventId=event_id, body=patch))
-    return "✅ Evento aggiornato:\n" + _formatta_evento(ev, cal)
+    ev = await asyncio.to_thread(
+        CALENDARIO.esegui, lambda s: s.events().patch(calendarId=cal, eventId=event_id, body=patch)
+    )
+    return "Evento aggiornato:\n" + _formatta_evento(ev, cal)
 
 
 @tool(
@@ -241,10 +280,13 @@ async def calendario_elimina_evento(event_id: str, conferma: bool = False, calen
     cal = _cal_id(calendario)
     ev = await asyncio.to_thread(CALENDARIO.esegui, lambda s: s.events().get(calendarId=cal, eventId=event_id))
     if not conferma:
-        return ("⚠️ Stai per eliminare:\n" + _formatta_evento(ev, cal) +
-                "\nChiedi conferma all'utente e poi richiama con conferma=true.")
+        return (
+            "Stai per eliminare:\n"
+            + _formatta_evento(ev, cal)
+            + "\nChiedi conferma all'utente e poi richiama con conferma=true."
+        )
     await asyncio.to_thread(CALENDARIO.esegui, lambda s: s.events().delete(calendarId=cal, eventId=event_id))
-    return f"🗑️ Evento «{ev.get('summary', '')}» eliminato."
+    return f"Evento «{ev.get('summary', '')}» eliminato."
 
 
 @tool(
@@ -256,9 +298,14 @@ async def calendario_elimina_evento(event_id: str, conferma: bool = False, calen
 )
 async def calendario_lista() -> str:
     res = await asyncio.to_thread(CALENDARIO.esegui, lambda s: s.calendarList().list())
-    righe = [f"• {c.get('summary')} — id: {c['id']}{' (principale)' if c.get('primary') else ''} [{c.get('accessRole')}]"
-             for c in res.get("items", [])]
+    righe = [
+        f"- {c.get('summary')} — id: {c['id']}{' (principale)' if c.get('primary') else ''} [{c.get('accessRole')}]"
+        for c in res.get("items", [])
+    ]
     configurati = ", ".join(GOOGLE_CALENDAR_IDS)
-    return ("Calendari accessibili:\n" + "\n".join(righe) if righe else
-            "Nessun calendario nella lista (con un service account i calendari condivisi possono non comparire qui, "
-            "ma sono comunque utilizzabili tramite ID).") + f"\nCalendari configurati (GOOGLE_CALENDAR_IDS): {configurati}"
+    return (
+        "Calendari accessibili:\n" + "\n".join(righe)
+        if righe
+        else "Nessun calendario nella lista (con un service account i calendari condivisi possono non comparire qui, "
+        "ma sono comunque utilizzabili tramite ID)."
+    ) + f"\nCalendari configurati (GOOGLE_CALENDAR_IDS): {configurati}"

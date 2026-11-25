@@ -1,23 +1,24 @@
 """
-Strumento: installazione di ambienti di sviluppo nella home persistente dell'agente (senza root ne' apt).
+Strumento: installazione di ambienti di sviluppo nella home persistente dell'agente (senza root né apt).
 
-L'agente lavora in una sandbox senza permessi di amministratore: apt non e' disponibile. Gli strumenti si
+L'agente lavora in una sandbox senza permessi di amministratore: apt non è disponibile. Gli strumenti si
 installano quindi nella sua home (/home/agente nella sandbox, DATA_DIR/home_agente sul server), scaricando i
 pacchetti ufficiali; restano disponibili per tutti i comandi e le conversazioni successive.
 """
+
 import re
 import shlex
 from typing import Literal
 
-from nucleo.configurazione import _env
+from nucleo.configurazione import env_str
 from nucleo.sandbox import esegui_comando
 from nucleo.server import UserError, tool
 from nucleo.utilita import tronca
 from nucleo.workspace import IdConversazione, cartella_lavoro
 
-NODE_DIST_URL = _env("NODE_DIST_URL", "https://nodejs.org/dist").rstrip("/")
-GO_URL = _env("GO_URL", "https://go.dev").rstrip("/")
-UV_URL = _env("UV_URL", "https://github.com/astral-sh/uv/releases/latest/download").rstrip("/")
+NODE_DIST_URL = env_str("NODE_DIST_URL", "https://nodejs.org/dist").rstrip("/")
+GO_URL = env_str("GO_URL", "https://go.dev").rstrip("/")
+UV_URL = env_str("UV_URL", "https://github.com/astral-sh/uv/releases/latest/download").rstrip("/")
 INSTALLAZIONE_TIMEOUT = 900
 
 _RE_VERSIONE = re.compile(r"^[A-Za-z0-9.]{0,20}$")
@@ -84,8 +85,9 @@ echo "Per un ambiente isolato: uv venv -p $V .venv && . .venv/bin/activate && uv
     ),
     group="terminal",
 )
-async def ambiente_installa(strumento: Literal["node", "python", "go"], versione: str = "",
-                            id_conversazione: IdConversazione = None) -> str:
+async def ambiente_installa(
+    strumento: Literal["node", "python", "go"], versione: str = "", id_conversazione: IdConversazione = None
+) -> str:
     versione = versione.strip()
     if not _RE_VERSIONE.match(versione):
         raise UserError(f"Versione non valida: '{versione}' (es. '22', '3.12', '1.23', 'lts').")
@@ -95,4 +97,5 @@ async def ambiente_installa(strumento: Literal["node", "python", "go"], versione
     codice, uscita, durata = await esegui_comando(script, base, INSTALLAZIONE_TIMEOUT, base)
     if codice != 0:
         raise UserError(f"Installazione di {strumento} non riuscita (codice {codice}):\n{tronca(uscita.strip(), 2000)}")
-    return f"{tronca(uscita.strip(), 3000)}\n[{durata:.0f}s · disponibile nel terminale, anche nelle prossime conversazioni]"
+    nota = f"[{durata:.0f}s · disponibile nel terminale, anche nelle prossime conversazioni]"
+    return f"{tronca(uscita.strip(), 3000)}\n{nota}"

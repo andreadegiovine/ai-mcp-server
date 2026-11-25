@@ -1,4 +1,5 @@
 """Crea i documenti di prova per i test di file_leggi (Word, Excel, PowerPoint, OpenDocument, PDF, ...)."""
+
 import io
 import shutil
 import subprocess
@@ -13,6 +14,7 @@ FONT = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
 def _immagine_con_testo(testo: str):
     from PIL import Image, ImageDraw, ImageFont
+
     img = Image.new("RGB", (1400, 300), "white")
     disegno = ImageDraw.Draw(img)
     font = ImageFont.truetype(str(FONT), 64) if FONT.exists() else ImageFont.load_default()
@@ -21,16 +23,29 @@ def _immagine_con_testo(testo: str):
 
 
 def _converti(soffice: str, sorgente: Path, formato: str, cartella: Path, profilo: Path) -> None:
-    subprocess.run([soffice, "--headless", "--norestore", f"-env:UserInstallation=file://{profilo}",
-                    "--convert-to", formato, "--outdir", str(cartella), str(sorgente)],
-                   capture_output=True, timeout=180)
+    subprocess.run(
+        [
+            soffice,
+            "--headless",
+            "--norestore",
+            f"-env:UserInstallation=file://{profilo}",
+            "--convert-to",
+            formato,
+            "--outdir",
+            str(cartella),
+            str(sorgente),
+        ],
+        capture_output=True,
+        timeout=180,
+    )
 
 
 def crea(cartella: Path, pdf_testo: bytes) -> dict:
-    """Ritorna un dizionario con le funzionalita' disponibili (libreoffice, ocr)."""
+    """Ritorna un dizionario con le funzionalità disponibili (libreoffice, ocr)."""
     cartella.mkdir(parents=True, exist_ok=True)
 
     import docx
+
     d = docx.Document()
     d.add_heading("Relazione condominio", level=1)
     d.add_paragraph("Il tetto va riparato entro marzo.")
@@ -41,6 +56,7 @@ def crea(cartella: Path, pdf_testo: bytes) -> dict:
     d.save(cartella / "relazione.docx")
 
     import openpyxl
+
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = "Spese"
@@ -52,6 +68,7 @@ def crea(cartella: Path, pdf_testo: bytes) -> dict:
 
     from pptx import Presentation
     from pptx.util import Inches
+
     pres = Presentation()
     slide = pres.slides.add_slide(pres.slide_layouts[1])
     slide.shapes.title.text = "Piano lavori 2027"
@@ -66,6 +83,7 @@ def crea(cartella: Path, pdf_testo: bytes) -> dict:
 
     (cartella / "testo.pdf").write_bytes(pdf_testo)
     from pypdf import PdfReader, PdfWriter
+
     w = PdfWriter()
     for pagina in PdfReader(io.BytesIO(pdf_testo)).pages:
         w.add_page(pagina)
@@ -81,10 +99,22 @@ def crea(cartella: Path, pdf_testo: bytes) -> dict:
 
     with zipfile.ZipFile(cartella / "libro.epub", "w") as z:
         z.writestr("mimetype", "application/epub+zip")
-        z.writestr("META-INF/container.xml", '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>')
-        z.writestr("OEBPS/content.opf", '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest><item id="c2" href="cap2.xhtml" media-type="application/xhtml+xml"/><item id="c1" href="cap1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>')
-        z.writestr("OEBPS/cap1.xhtml", "<html><body><h1>Capitolo uno</h1><p>C'era una volta un condominio molto tranquillo e silenzioso.</p></body></html>")
-        z.writestr("OEBPS/cap2.xhtml", "<html><body><h1>Capitolo due</h1><p>Poi arrivo' il nuovo amministratore con tante idee.</p></body></html>")
+        z.writestr(
+            "META-INF/container.xml",
+            '<?xml version="1.0"?><container xmlns="urn:oasis:names:tc:opendocument:xmlns:container" version="1.0"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>',
+        )
+        z.writestr(
+            "OEBPS/content.opf",
+            '<?xml version="1.0"?><package xmlns="http://www.idpf.org/2007/opf" version="3.0"><manifest><item id="c2" href="cap2.xhtml" media-type="application/xhtml+xml"/><item id="c1" href="cap1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>',
+        )
+        z.writestr(
+            "OEBPS/cap1.xhtml",
+            "<html><body><h1>Capitolo uno</h1><p>C'era una volta un condominio molto tranquillo e silenzioso.</p></body></html>",
+        )
+        z.writestr(
+            "OEBPS/cap2.xhtml",
+            "<html><body><h1>Capitolo due</h1><p>Poi arrivo' il nuovo amministratore con tante idee.</p></body></html>",
+        )
 
     m = EmailMessage()
     m["From"], m["To"], m["Subject"] = "admin@condominio.it", "andrea@example.com", "Convocazione assemblea"
@@ -98,7 +128,7 @@ def crea(cartella: Path, pdf_testo: bytes) -> dict:
     with tarfile.open(cartella / "pacchetto.tar.gz", "w:gz") as tf:
         tf.add(cartella / "nota.rtf", arcname="nota.rtf")
 
-    (cartella / "rotto.docx").write_bytes(b"questo non e' un docx" * 10)
+    (cartella / "rotto.docx").write_bytes(b"questo non e un docx" * 10)
     (cartella / "pagina.html").write_text("<html><body><p>Sorgente HTML</p></body></html>")
     (cartella / "dati.bin").write_bytes(bytes(range(256)) * 4)
 
@@ -106,9 +136,16 @@ def crea(cartella: Path, pdf_testo: bytes) -> dict:
     if soffice:
         profilo = cartella.parent / "lo-profilo-test"
         # il .doc si genera dall'.odt: la conversione diretta docx (python-docx) -> doc perde le tabelle
-        for sorgente, formato in (("relazione.docx", "odt"), ("relazione.odt", "doc"), ("spese.xlsx", "xls"),
-                                  ("spese.xlsx", "ods"), ("lavori.pptx", "ppt"), ("lavori.pptx", "odp")):
+        for sorgente, formato in (
+            ("relazione.docx", "odt"),
+            ("relazione.odt", "doc"),
+            ("spese.xlsx", "xls"),
+            ("spese.xlsx", "ods"),
+            ("lavori.pptx", "ppt"),
+            ("lavori.pptx", "odp"),
+        ):
             _converti(soffice, cartella / sorgente, formato, cartella, profilo)
-        (cartella / "esportato.xls").write_text("<table><tr><td>Nome</td><td>Quota</td></tr>"
-                                                "<tr><td>Rossi</td><td>350</td></tr></table>")
+        (cartella / "esportato.xls").write_text(
+            "<table><tr><td>Nome</td><td>Quota</td></tr><tr><td>Rossi</td><td>350</td></tr></table>"
+        )
     return {"libreoffice": bool(soffice), "ocr": bool(shutil.which("tesseract")) and FONT.exists()}

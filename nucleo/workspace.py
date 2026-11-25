@@ -1,32 +1,39 @@
 """Workspace: cartelle di lavoro (anche per conversazione), percorsi confinati, ambiente senza segreti."""
+
 import os
 import re
 import sys
 from pathlib import Path
-from typing import Annotated, Optional
+from typing import Annotated
 
 from pydantic import Field
 
-from nucleo.configurazione import DATA_DIR, _env_bool, WORKSPACE_DIR, logger
+from nucleo.configurazione import DATA_DIR, WORKSPACE_DIR, env_bool, logger
 from nucleo.server import FUNZIONALITA, UserError
 
-
 # Strumenti che usano il workspace (terminale, file, download): ENABLE_TERMINAL=false li disattiva tutti
-FUNZIONALITA["terminal"] = _env_bool("ENABLE_TERMINAL", True)
+FUNZIONALITA["terminal"] = env_bool("ENABLE_TERMINAL", True)
 
 # Parametro comune dei tool che usano il workspace (vedi cartella_lavoro)
-IdConversazione = Annotated[Optional[str], Field(
-    description="ID della conversazione corrente (facoltativo). Se indicato, i file vengono letti e scritti "
-                "nella sottocartella del workspace con questo nome, creata se non esiste. Usa sempre lo "
-                "stesso ID per tutta la conversazione.")]
+IdConversazione = Annotated[
+    str | None,
+    Field(
+        description="ID della conversazione corrente (facoltativo). Se indicato, i file vengono letti e scritti "
+        "nella sottocartella del workspace con questo nome, creata se non esiste. Usa sempre lo "
+        "stesso ID per tutta la conversazione."
+    ),
+]
 
 
-_CHIAVI_SENSIBILI = re.compile(r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|CREDENTIAL|PRIVATE_KEY|"
-                               r"^HASS_|^GOOGLE_|^MCP_|^AWS_|^OPENAI|^ANTHROPIC)", re.I)
+_CHIAVI_SENSIBILI = re.compile(
+    r"(TOKEN|SECRET|PASSWORD|PASSWD|API_KEY|APIKEY|CREDENTIAL|PRIVATE_KEY|"
+    r"^HASS_|^GOOGLE_|^MCP_|^AWS_|^OPENAI|^ANTHROPIC)",
+    re.I,
+)
 
 
 # Home persistente dell'agente: strumenti installati senza root (Node.js, Python con uv, Go, npm -g, pip in
-# venv...) restano tra un comando e l'altro e tra le conversazioni. Nella sandbox e' visibile come /home/agente.
+# venv...) restano tra un comando e l'altro e tra le conversazioni. Nella sandbox è visibile come /home/agente.
 HOME_AGENTE = DATA_DIR / "home_agente"
 HOME_SANDBOX = "/home/agente"
 
@@ -41,21 +48,34 @@ def path_base() -> str:
 def variabili_home(home: str) -> dict[str, str]:
     """HOME, PATH e cartelle degli strumenti installati dall'agente nella sua home."""
     cartelle_bin = [f"{home}/.local/bin", f"{home}/go/bin", f"{home}/.cargo/bin"]
-    return {"HOME": home, "PATH": os.pathsep.join(cartelle_bin + [path_base()]),
-            "NPM_CONFIG_PREFIX": f"{home}/.local", "GOPATH": f"{home}/go", "XDG_CACHE_HOME": f"{home}/.cache"}
+    return {
+        "HOME": home,
+        "PATH": os.pathsep.join(cartelle_bin + [path_base()]),
+        "NPM_CONFIG_PREFIX": f"{home}/.local",
+        "GOPATH": f"{home}/go",
+        "XDG_CACHE_HOME": f"{home}/.cache",
+    }
 
 
-def env_sicuro(base: Optional[Path] = None) -> dict[str, str]:
+def env_sicuro(base: Path | None = None) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not _CHIAVI_SENSIBILI.search(k)}
-    env.update({"PYTHONUNBUFFERED": "1", "GIT_TERMINAL_PROMPT": "0", "TERM": "dumb",
-                "PIP_DISABLE_PIP_VERSION_CHECK": "1", "PAGER": "cat", "GIT_PAGER": "cat",
-                "WORKSPACE": str(base or WORKSPACE_DIR)})
+    env.update(
+        {
+            "PYTHONUNBUFFERED": "1",
+            "GIT_TERMINAL_PROMPT": "0",
+            "TERM": "dumb",
+            "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PAGER": "cat",
+            "GIT_PAGER": "cat",
+            "WORKSPACE": str(base or WORKSPACE_DIR),
+        }
+    )
     HOME_AGENTE.mkdir(parents=True, exist_ok=True)
     env.update(variabili_home(str(HOME_AGENTE)))
     return env
 
 
-def percorso_workspace(p: str, base: Optional[Path] = None) -> Path:
+def percorso_workspace(p: str, base: Path | None = None) -> Path:
     """
     Risolve un percorso garantendo che resti dentro 'base' (default: tutto il workspace), anche seguendo
     i symlink. I percorsi relativi partono da 'base'.
@@ -76,7 +96,8 @@ def percorso_workspace(p: str, base: Optional[Path] = None) -> Path:
 
 _RE_ID_CONV = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.\-]{0,127}$")
 
-def cartella_lavoro(id_conversazione: Optional[str] = None) -> Path:
+
+def cartella_lavoro(id_conversazione: str | None = None) -> Path:
     """
     Cartella in cui lavorano i tool: la sottocartella della conversazione (creata se non esiste) oppure,
     senza ID, la radice del workspace.

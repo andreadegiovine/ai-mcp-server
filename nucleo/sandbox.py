@@ -1,4 +1,5 @@
 """Esecuzione dei comandi dell'agente nella sandbox bubblewrap."""
+
 import asyncio
 import contextlib
 import functools
@@ -9,17 +10,15 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
-from nucleo.configurazione import _env, WORKSPACE_DIR
+from nucleo.configurazione import WORKSPACE_DIR, env_str
 from nucleo.server import UserError
 from nucleo.workspace import HOME_AGENTE, HOME_SANDBOX, env_sicuro, variabili_home
 
-
 # Sandbox (bubblewrap) per terminale ed esegui_python: i comandi vedono solo la cartella di lavoro e i programmi
 # di sistema. "auto" = usala se disponibile, "obbligatoria" = senza sandbox il terminale non funziona,
-# "disattivata" = comandi eseguiti direttamente (vedono tutto cio' che vede l'utente del servizio).
-TERMINAL_SANDBOX = _env("TERMINAL_SANDBOX", "auto").lower()
+# "disattivata" = comandi eseguiti direttamente (vedono tutto ciò che vede l'utente del servizio).
+TERMINAL_SANDBOX = env_str("TERMINAL_SANDBOX", "auto").lower()
 
 
 @functools.lru_cache(maxsize=1)
@@ -31,24 +30,44 @@ def sandbox_disponibile() -> tuple[bool, str]:
     if not bwrap:
         return False, "bubblewrap non installato (apt install -y bubblewrap)"
     try:
-        r = subprocess.run([bwrap, "--unshare-all", "--share-net", "--ro-bind", "/", "/", "--dev", "/dev",
-                            "--proc", "/proc", "true"], capture_output=True, text=True, timeout=15)
+        r = subprocess.run(
+            [bwrap, "--unshare-all", "--share-net", "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "true"],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
     except Exception as e:
         return False, f"bubblewrap non avviabile: {e}"
     if r.returncode != 0:
-        return False, (f"bubblewrap non utilizzabile ({r.stderr.strip()[:200]}). In un container LXC di Proxmox "
-                       f"abilita Opzioni > Funzionalita' > Nesting e riavvia il container")
+        return False, (
+            f"bubblewrap non utilizzabile ({r.stderr.strip()[:200]}). In un container LXC di Proxmox "
+            f"abilita Opzioni > Funzionalità > Nesting e riavvia il container"
+        )
     return True, ""
 
 
 def argomenti_sandbox(base: Path, cwd: Path) -> list[str]:
     """
     Comando bwrap: il processo vede solo la cartella di lavoro (lettura/scrittura) e, in sola lettura,
-    i programmi di sistema, /etc e l'interprete Python del server. /tmp e' temporanea; la home dell'agente
-    (/home/agente) e' persistente, per gli strumenti installati senza root. La rete resta disponibile.
+    i programmi di sistema, /etc e l'interprete Python del server. /tmp è temporanea; la home dell'agente
+    (/home/agente) è persistente, per gli strumenti installati senza root. La rete resta disponibile.
     """
-    a = ["bwrap", "--die-with-parent", "--new-session", "--unshare-all", "--share-net",
-         "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp", "--ro-bind", "/usr", "/usr"]
+    a = [
+        "bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-all",
+        "--share-net",
+        "--proc",
+        "/proc",
+        "--dev",
+        "/dev",
+        "--tmpfs",
+        "/tmp",
+        "--ro-bind",
+        "/usr",
+        "/usr",
+    ]
     for d in ("/bin", "/sbin", "/lib", "/lib32", "/lib64", "/libx32"):
         if os.path.islink(d):
             a += ["--symlink", os.readlink(d), d]
@@ -71,7 +90,7 @@ def argomenti_sandbox(base: Path, cwd: Path) -> list[str]:
     return a
 
 
-def comando_da_eseguire(comando: str, cwd: Path, base: Optional[Path]) -> list[str]:
+def comando_da_eseguire(comando: str, cwd: Path, base: Path | None) -> list[str]:
     """Argomenti del processo: dentro la sandbox se disponibile, secondo TERMINAL_SANDBOX."""
     disponibile, motivo = sandbox_disponibile()
     if disponibile:
@@ -81,17 +100,21 @@ def comando_da_eseguire(comando: str, cwd: Path, base: Optional[Path]) -> list[s
     return ["bash", "-c", comando]
 
 
-async def esegui_comando(comando: str, cwd: Path, timeout: int,
-                         base: Optional[Path] = None) -> tuple[int, str, float]:
+async def esegui_comando(comando: str, cwd: Path, timeout: int, base: Path | None = None) -> tuple[int, str, float]:
     t0 = time.monotonic()
     proc = await asyncio.create_subprocess_exec(
-        *comando_da_eseguire(comando, cwd, base), cwd=str(cwd), stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL, env=env_sicuro(base), start_new_session=True,
+        *comando_da_eseguire(comando, cwd, base),
+        cwd=str(cwd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
+        env=env_sicuro(base),
+        start_new_session=True,
     )
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
         codice = proc.returncode
-    except asyncio.TimeoutError:
+    except TimeoutError:
         with contextlib.suppress(ProcessLookupError):
             os.killpg(proc.pid, signal.SIGKILL)
         out, _ = await proc.communicate()
@@ -102,4 +125,5 @@ async def esegui_comando(comando: str, cwd: Path, timeout: int,
 
 def quote_shell(s: str) -> str:
     import shlex
+
     return shlex.quote(s)

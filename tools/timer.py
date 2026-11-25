@@ -1,4 +1,5 @@
 """Strumenti: timer e sveglie multipli, persistenti, con notifiche tramite Home Assistant."""
+
 import asyncio
 import contextlib
 import math
@@ -10,30 +11,28 @@ import time
 import wave
 from collections import deque
 from datetime import datetime, timedelta
-from typing import Optional
 
-from nucleo.configurazione import _env, _env_bool, DATA_DIR, TZ, logger
+from nucleo.configurazione import DATA_DIR, TZ, env_bool, env_str, logger
 from nucleo.server import UserError, tool
 from nucleo.utilita import (
     GIORNI,
-    now,
-    normalizza,
-    fmt_durata,
-    fmt_dt,
     JsonStore,
     _parse_ora,
+    fmt_dt,
+    fmt_durata,
+    normalizza,
+    now,
     parse_data_ora,
     parse_durata,
 )
 from tools.home_assistant import HASS
 
-
-TIMER_NOTIFY_SERVICE = _env("TIMER_NOTIFY_SERVICE")
-TIMER_TTS_ENTITY = _env("TIMER_TTS_ENTITY")
-TIMER_TTS_PLAYER = _env("TIMER_TTS_PLAYER")
-TIMER_HASS_SCRIPT = _env("TIMER_HASS_SCRIPT")
-TIMER_PERSISTENT_NOTIFICATION = _env_bool("TIMER_PERSISTENT_NOTIFICATION", True)
-TIMER_LOCAL_SOUND = _env_bool("TIMER_LOCAL_SOUND", False)
+TIMER_NOTIFY_SERVICE = env_str("TIMER_NOTIFY_SERVICE")
+TIMER_TTS_ENTITY = env_str("TIMER_TTS_ENTITY")
+TIMER_TTS_PLAYER = env_str("TIMER_TTS_PLAYER")
+TIMER_HASS_SCRIPT = env_str("TIMER_HASS_SCRIPT")
+TIMER_PERSISTENT_NOTIFICATION = env_bool("TIMER_PERSISTENT_NOTIFICATION", True)
+TIMER_LOCAL_SOUND = env_bool("TIMER_LOCAL_SOUND", False)
 
 
 class GestoreTimer:
@@ -98,24 +97,39 @@ class GestoreTimer:
         msg = f"{tipo} {('«' + t['etichetta'] + '» ') if t['etichetta'] else ''}è scaduto!"
         if t["tipo"] == "timer":
             msg += f" (durata {fmt_durata(t['durata'])})"
-        logger.info(f"⏰ {msg}")
+        logger.info(f"{msg}")
         await self._notifica(t, msg)
 
     async def _notifica(self, t: dict, msg: str) -> None:
         compiti = []
         if HASS is not None:
             if TIMER_PERSISTENT_NOTIFICATION:
-                compiti.append(("persistent_notification", "create",
-                                {"title": "⏰ Timer", "message": msg, "notification_id": f"mcp_timer_{t['id']}"}))
+                compiti.append(
+                    (
+                        "persistent_notification",
+                        "create",
+                        {"title": "Timer", "message": msg, "notification_id": f"mcp_timer_{t['id']}"},
+                    )
+                )
             if TIMER_NOTIFY_SERVICE and "." in TIMER_NOTIFY_SERVICE:
                 d, s = TIMER_NOTIFY_SERVICE.split(".", 1)
-                compiti.append((d, s, {"title": "⏰ Timer", "message": msg}))
+                compiti.append((d, s, {"title": "Timer", "message": msg}))
             if TIMER_TTS_ENTITY and TIMER_TTS_PLAYER:
-                compiti.append(("tts", "speak", {"entity_id": TIMER_TTS_ENTITY,
-                                                 "media_player_entity_id": TIMER_TTS_PLAYER, "message": msg}))
+                compiti.append(
+                    (
+                        "tts",
+                        "speak",
+                        {"entity_id": TIMER_TTS_ENTITY, "media_player_entity_id": TIMER_TTS_PLAYER, "message": msg},
+                    )
+                )
             if TIMER_HASS_SCRIPT:
-                compiti.append(("script", "turn_on", {"entity_id": TIMER_HASS_SCRIPT,
-                                                      "variables": {"messaggio": msg, "etichetta": t["etichetta"]}}))
+                compiti.append(
+                    (
+                        "script",
+                        "turn_on",
+                        {"entity_id": TIMER_HASS_SCRIPT, "variables": {"messaggio": msg, "etichetta": t["etichetta"]}},
+                    )
+                )
         for d, s, dati in compiti:
             try:
                 await asyncio.to_thread(HASS.chiama_servizio, d, s, dati)
@@ -131,21 +145,26 @@ class GestoreTimer:
                 w.setsampwidth(2)
                 w.setframerate(22050)
                 frames = bytearray()
-                for rip in range(3):
+                for _rip in range(3):
                     for i in range(int(22050 * 0.35)):
                         frames += struct.pack("<h", int(12000 * math.sin(2 * math.pi * 880 * i / 22050)))
                     frames += b"\x00\x00" * int(22050 * 0.2)
                 w.writeframes(bytes(frames))
-        for cmd in (["mpv", "--no-video", "--really-quiet"], ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"],
-                    ["paplay"], ["aplay", "-q"]):
+        for cmd in (
+            ["mpv", "--no-video", "--really-quiet"],
+            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"],
+            ["paplay"],
+            ["aplay", "-q"],
+        ):
             if shutil.which(cmd[0]):
                 with contextlib.suppress(Exception):
-                    p = await asyncio.create_subprocess_exec(*cmd, str(self._beep), stdout=subprocess.DEVNULL,
-                                                             stderr=subprocess.DEVNULL)
+                    p = await asyncio.create_subprocess_exec(
+                        *cmd, str(self._beep), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                    )
                     await asyncio.wait_for(p.wait(), 15)
                 return
 
-    def crea(self, secondi: int, etichetta: str, tipo: str, fine: Optional[float] = None) -> dict:
+    def crea(self, secondi: int, etichetta: str, tipo: str, fine: float | None = None) -> dict:
         if len(self.timer) >= 50:
             raise UserError("Troppi timer attivi (max 50).")
         t = {
@@ -168,8 +187,11 @@ class GestoreTimer:
         if chiave.lower() in ("tutti", "all", "*"):
             eliminati = list(self.timer.values())
         else:
-            eliminati = [t for t in self.timer.values()
-                         if t["id"] == chiave or (t["etichetta"] and normalizza(t["etichetta"]) == normalizza(chiave))]
+            eliminati = [
+                t
+                for t in self.timer.values()
+                if t["id"] == chiave or (t["etichetta"] and normalizza(t["etichetta"]) == normalizza(chiave))
+            ]
         for t in eliminati:
             self.timer.pop(t["id"], None)
             task = self._task.pop(t["id"], None)
@@ -187,8 +209,11 @@ def _descr_timer(t: dict) -> str:
     fine = datetime.fromtimestamp(t["fine"], TZ)
     nome = f"«{t['etichetta']}» " if t["etichetta"] else ""
     if t["tipo"] == "sveglia":
-        return f"[{t['id']}] ⏰ Sveglia {nome}alle {fine:%H:%M} di {GIORNI[fine.weekday()]} {fine:%d/%m} (tra {fmt_durata(rim)})"
-    return f"[{t['id']}] ⏲️ Timer {nome}di {fmt_durata(t['durata'])}: mancano {fmt_durata(rim)} (scade alle {fine:%H:%M:%S})"
+        giorno = f"{GIORNI[fine.weekday()]} {fine:%d/%m}"
+        return f"[{t['id']}] Sveglia {nome}alle {fine:%H:%M} di {giorno} (tra {fmt_durata(rim)})"
+    return (
+        f"[{t['id']}] Timer {nome}di {fmt_durata(t['durata'])}: mancano {fmt_durata(rim)} (scade alle {fine:%H:%M:%S})"
+    )
 
 
 @tool(
@@ -196,8 +221,8 @@ def _descr_timer(t: dict) -> str:
     title="Imposta timer o sveglia",
     description=(
         "Imposta un timer (parametro 'durata', es. '10m', '1h30m', '45 secondi', '2 ore e 15 minuti'; un numero "
-        "senza unita' = minuti) OPPURE una sveglia/promemoria a un orario (parametro 'orario', es. '07:30', "
-        "'domani 9:00', '2026-12-24 18:00'). Supporta piu' timer contemporanei: usa 'etichetta' per distinguerli "
+        "senza unità = minuti) OPPURE una sveglia/promemoria a un orario (parametro 'orario', es. '07:30', "
+        "'domani 9:00', '2026-12-24 18:00'). Supporta più timer contemporanei: usa 'etichetta' per distinguerli "
         "(es. 'pasta'). Alla scadenza viene inviata una notifica tramite Home Assistant."
     ),
 )
@@ -210,7 +235,7 @@ async def timer_imposta(durata: str = "", etichetta: str = "", orario: str = "")
             if _parse_ora(orario) is not None:  # solo ora: la prossima occorrenza
                 dt += timedelta(days=1)
             else:
-                raise UserError(f"L'orario {fmt_dt(dt)} e' gia' passato.")
+                raise UserError(f"L'orario {fmt_dt(dt)} è già passato.")
         sec = int((dt - now()).total_seconds())
         t = TIMER.crea(sec, etichetta, "sveglia", fine=dt.timestamp())
     elif durata.strip():
@@ -227,7 +252,10 @@ async def timer_imposta(durata: str = "", etichetta: str = "", orario: str = "")
 @tool(
     "timer_lista",
     title="Elenco timer",
-    description="Mostra i timer e le sveglie attivi con il tempo rimanente, e quelli scaduti di recente. Usalo per 'quanto manca al timer?'.",
+    description=(
+        "Mostra i timer e le sveglie attivi con il tempo rimanente, e quelli scaduti di recente. Usalo per "
+        "'quanto manca al timer?'."
+    ),
     read_only=True,
 )
 async def timer_lista() -> str:
@@ -240,8 +268,10 @@ async def timer_lista() -> str:
         righe.append("\nScaduti nelle ultime 6 ore:")
         for t in recenti[-10:]:
             nome = f"«{t['etichetta']}» " if t["etichetta"] else ""
-            righe.append(f"- {t['tipo']} {nome}scaduto alle {datetime.fromtimestamp(t['fine'], TZ):%H:%M}"
-                         + (f" ({t['nota']})" if t.get("nota") else ""))
+            righe.append(
+                f"- {t['tipo']} {nome}scaduto alle {datetime.fromtimestamp(t['fine'], TZ):%H:%M}"
+                + (f" ({t['nota']})" if t.get("nota") else "")
+            )
     return "\n".join(righe)
 
 

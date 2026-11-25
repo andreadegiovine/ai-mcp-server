@@ -12,7 +12,7 @@ Espone gli strumenti via protocollo MCP "Streamable HTTP" sulla porta 8000, con 
 Struttura del codice
 --------------------
   mcp_server.py        questo file: app HTTP, autenticazione, avvio/arresto, riga di comando
-  nucleo/              servizi comuni: configurazione, server MCP e decoratore dei tool, utilita',
+  nucleo/              servizi comuni: configurazione, server MCP e decoratore dei tool, utilità,
                        rete (anti-SSRF), browser, workspace, sandbox, conferme degli invii, link ai file
   tools/               un modulo per gruppo di strumenti, ognuno con le proprie costanti di configurazione
 
@@ -33,23 +33,22 @@ import os
 import sys
 from pathlib import Path
 
-from nucleo.link_file import PREFISSO_ROTTA
+from nucleo import manutenzione, sandbox
+from nucleo.browser import BROWSER
 from nucleo.configurazione import (
+    DATA_DIR,
+    MCP_API_KEY,
     MCP_HOST,
     MCP_PORT,
-    MCP_API_KEY,
-    DATA_DIR,
     WORKSPACE_DIR,
-    logger,
-    suggerimento_permessi,
     controlla_permessi,
+    logger,
     prepara_cartelle,
+    suggerimento_permessi,
 )
-from nucleo.server import mcp, REGISTERED_TOOLS, FUNZIONALITA
+from nucleo.link_file import PREFISSO_ROTTA
+from nucleo.server import FUNZIONALITA, REGISTERED_TOOLS, mcp
 from nucleo.utilita import now
-from nucleo.browser import BROWSER
-
-from nucleo import sandbox
 
 # Importare il pacchetto tools registra tutti gli strumenti (vedi tools/__init__.py)
 from tools.calendario_google import GOOGLE_SCOPES, GOOGLE_TOKEN_FILE
@@ -58,6 +57,8 @@ from tools.musica import LETTORE
 from tools.terminale import PROCESSI
 from tools.timer import TIMER
 
+VERSIONE = manutenzione.versione()
+
 
 # =============================================================================
 # APP HTTP: autenticazione, health check, ciclo di vita
@@ -65,7 +66,10 @@ from tools.timer import TIMER
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
     from starlette.responses import JSONResponse
-    return JSONResponse({"stato": "ok", "tool": len(REGISTERED_TOOLS), "ora": now().isoformat(timespec="seconds")})
+
+    return JSONResponse(
+        {"stato": "ok", "versione": VERSIONE, "tool": len(REGISTERED_TOOLS), "ora": now().isoformat(timespec="seconds")}
+    )
 
 
 class ApiKeyMiddleware:
@@ -76,9 +80,12 @@ class ApiKeyMiddleware:
         self.chiave = chiave.encode()
 
     async def __call__(self, scope, receive, send):
-        # /health e i link firmati ai file (/file/...) non richiedono la chiave: un tag <img> non puo' inviarla
-        if scope["type"] == "http" and scope.get("path") != "/health" \
-                and not scope.get("path", "").startswith(PREFISSO_ROTTA):
+        # /health e i link firmati ai file (/file/...) non richiedono la chiave: un tag <img> non può inviarla
+        if (
+            scope["type"] == "http"
+            and scope.get("path") != "/health"
+            and not scope.get("path", "").startswith(PREFISSO_ROTTA)
+        ):
             headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
             fornita = headers.get("x-api-key", "")
             auth = headers.get("authorization", "")
@@ -86,15 +93,23 @@ class ApiKeyMiddleware:
                 fornita = auth[7:].strip()
             if not hmac.compare_digest(fornita.encode(), self.chiave):
                 corpo = b'{"error":"unauthorized"}'
-                await send({"type": "http.response.start", "status": 401,
-                            "headers": [(b"content-type", b"application/json"),
-                                        (b"www-authenticate", b"Bearer")]})
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [(b"content-type", b"application/json"), (b"www-authenticate", b"Bearer")],
+                    }
+                )
                 await send({"type": "http.response.body", "body": corpo})
                 return
         await self.app(scope, receive, send)
 
 
+_attivita: list[asyncio.Task] = []
+
+
 async def avvio() -> None:
+    logger.info(f"Server MCP versione {VERSIONE}")
     prepara_cartelle()
     problemi = controlla_permessi()
     if problemi:
@@ -109,13 +124,18 @@ async def avvio() -> None:
         elif sandbox.TERMINAL_SANDBOX in ("obbligatoria", "required", "si", "sì"):
             logger.error(f"Sandbox del terminale non disponibile ({motivo}): terminale ed esegui_python disattivati.")
         else:
-            logger.warning(f"Terminale SENZA sandbox: i comandi possono leggere tutto cio' che legge l'utente del "
-                           f"servizio. Motivo: {motivo}")
+            logger.warning(
+                f"Terminale SENZA sandbox: i comandi possono leggere tutto ciò che legge l'utente del "
+                f"servizio. Motivo: {motivo}"
+            )
     logger.info(f"Tool attivi ({len(REGISTERED_TOOLS)}): {', '.join(REGISTERED_TOOLS)}")
+    _attivita.append(asyncio.get_running_loop().create_task(manutenzione.ciclo_pulizia(PROCESSI.rimuovi_terminati)))
 
 
 async def arresto() -> None:
     logger.info("Arresto in corso...")
+    for attivita in _attivita:
+        attivita.cancel()
     TIMER.ferma()
     PROCESSI.termina_tutti()
     with contextlib.suppress(Exception):
@@ -146,6 +166,7 @@ def crea_app():
 def google_auth(client_secret: str) -> None:
     """Flusso OAuth una tantum per creare il token di Google Calendar."""
     from google_auth_oauthlib.flow import InstalledAppFlow
+
     flow = InstalledAppFlow.from_client_secrets_file(client_secret, GOOGLE_SCOPES)
     creds = flow.run_local_server(port=8765, open_browser=True)
     Path(GOOGLE_TOKEN_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -159,14 +180,19 @@ def main() -> None:
         google_auth(sys.argv[2])
         return
     if len(sys.argv) >= 2 and sys.argv[1] == "--check":
-        print(f"Funzionalita': {json.dumps(FUNZIONALITA)}")
+        print(f"Funzionalità: {json.dumps(FUNZIONALITA)}")
         print(f"Tool registrati ({len(REGISTERED_TOOLS)}): {', '.join(REGISTERED_TOOLS)}")
         print(f"Workspace: {WORKSPACE_DIR}  Dati: {DATA_DIR}")
+        print(f"Versione: {VERSIONE}")
+        print(manutenzione.spazio_occupato())
         return
     import uvicorn
+
     if not MCP_API_KEY:
-        logger.warning("MCP_API_KEY non impostata: l'endpoint e' accessibile a chiunque sulla rete "
-                       "(sconsigliato con il terminale abilitato).")
+        logger.warning(
+            "MCP_API_KEY non impostata: l'endpoint è accessibile a chiunque sulla rete "
+            "(sconsigliato con il terminale abilitato)."
+        )
     if not HASS_TOKEN:
         logger.warning("HASS_TOKEN non impostato: tool Home Assistant disabilitati.")
     logger.info(f"Avvio server MCP su {MCP_HOST}:{MCP_PORT} — endpoint OpenWebUI: http://<IP>:{MCP_PORT}/")

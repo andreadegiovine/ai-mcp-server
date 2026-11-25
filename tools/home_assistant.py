@@ -1,4 +1,5 @@
-"""Strumenti: Home Assistant (ricerca entita', stato, storico, servizi con regole di sicurezza)."""
+"""Strumenti: Home Assistant (ricerca entità, stato, storico, servizi con regole di sicurezza)."""
+
 import asyncio
 import contextlib
 import fnmatch
@@ -6,63 +7,124 @@ import json
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from difflib import SequenceMatcher
-from typing import Any, Optional
+from typing import Any
 from urllib.parse import quote
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from nucleo.configurazione import _env, _env_bool, _env_list, _env_int, DATA_DIR, TZ, logger
+from nucleo.configurazione import DATA_DIR, TZ, env_bool, env_int, env_lista, env_str, logger
+from nucleo.manutenzione import scrivi_registro
 from nucleo.server import FUNZIONALITA, UserError, tool
-from nucleo.utilita import now, tronca, normalizza, fmt_dt, fa_quanto
+from nucleo.utilita import fa_quanto, fmt_dt, normalizza, now, tronca
 
-
-HASS_URL = _env("HASS_URL", "http://192.168.178.48:8123").rstrip("/")
-HASS_TOKEN = _env("HASS_TOKEN")
-HASS_READ_ONLY = _env_bool("HASS_READ_ONLY", False)
-HASS_VERIFY_SSL = _env_bool("HASS_VERIFY_SSL", True)
-HASS_CACHE_TTL = _env_int("HASS_CACHE_TTL", 10)
+HASS_URL = env_str("HASS_URL", "http://192.168.178.48:8123").rstrip("/")
+HASS_TOKEN = env_str("HASS_TOKEN")
+HASS_READ_ONLY = env_bool("HASS_READ_ONLY", False)
+HASS_VERIFY_SSL = env_bool("HASS_VERIFY_SSL", True)
+HASS_CACHE_TTL = env_int("HASS_CACHE_TTL", 10)
 _DEFAULT_HASS_DOMAINS = (
     "light,switch,fan,cover,climate,media_player,scene,script,input_boolean,input_number,"
     "input_select,input_text,input_button,input_datetime,button,vacuum,humidifier,water_heater,"
     "number,select,automation,notify,tts,persistent_notification,timer,counter,siren,valve,"
     "lawn_mower,todo,weather,lock,alarm_control_panel,remote,homeassistant,calendar"
 )
-HASS_ALLOWED_DOMAINS = set(_env_list("HASS_ALLOWED_DOMAINS", _DEFAULT_HASS_DOMAINS))
-HASS_CONFIRM_DOMAINS = set(_env_list("HASS_CONFIRM_DOMAINS", "lock,alarm_control_panel"))
-HASS_CONFIRM_ENTITIES = _env_list("HASS_CONFIRM_ENTITIES")
-HASS_BLOCKED_ENTITIES = _env_list("HASS_BLOCKED_ENTITIES")
-HASS_ALLOWED_ENTITIES = _env_list("HASS_ALLOWED_ENTITIES")
+HASS_ALLOWED_DOMAINS = set(env_lista("HASS_ALLOWED_DOMAINS", _DEFAULT_HASS_DOMAINS))
+HASS_CONFIRM_DOMAINS = set(env_lista("HASS_CONFIRM_DOMAINS", "lock,alarm_control_panel"))
+HASS_CONFIRM_ENTITIES = env_lista("HASS_CONFIRM_ENTITIES")
+HASS_BLOCKED_ENTITIES = env_lista("HASS_BLOCKED_ENTITIES")
+HASS_ALLOWED_ENTITIES = env_lista("HASS_ALLOWED_ENTITIES")
 
 
-FUNZIONALITA["hass"] = _env_bool("ENABLE_HASS", True) and bool(HASS_TOKEN)
+FUNZIONALITA["hass"] = env_bool("ENABLE_HASS", True) and bool(HASS_TOKEN)
 
 
-_RE_ENTITY = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
+RE_ENTITY = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 _RE_SLUG = re.compile(r"^[a-z0-9_]+$")
-_ATTR_RUMOROSI = {"friendly_name", "unit_of_measurement", "icon", "entity_picture", "supported_features",
-                  "supported_color_modes", "attribution", "assumed_state", "editable", "id", "restored",
-                  "options", "effect_list", "source_list", "sound_mode_list", "hvac_modes", "fan_modes",
-                  "preset_modes", "swing_modes", "access_token", "entity_id", "device_trackers",
-                  "state_class", "min_color_temp_kelvin", "max_color_temp_kelvin", "min_mireds", "max_mireds"}
+_ATTR_RUMOROSI = {
+    "friendly_name",
+    "unit_of_measurement",
+    "icon",
+    "entity_picture",
+    "supported_features",
+    "supported_color_modes",
+    "attribution",
+    "assumed_state",
+    "editable",
+    "id",
+    "restored",
+    "options",
+    "effect_list",
+    "source_list",
+    "sound_mode_list",
+    "hvac_modes",
+    "fan_modes",
+    "preset_modes",
+    "swing_modes",
+    "access_token",
+    "entity_id",
+    "device_trackers",
+    "state_class",
+    "min_color_temp_kelvin",
+    "max_color_temp_kelvin",
+    "min_mireds",
+    "max_mireds",
+}
 _ATTR_SENSIBILI = re.compile(r"(token|password|passwd|secret|api_?key|code_format|access|credential)", re.I)
 _SINONIMI = {
-    "luce": "light", "luci": "light", "lampada": "light", "lampadina": "light", "faretti": "light",
-    "interruttore": "switch", "presa": "switch", "prese": "switch", "spina": "switch",
-    "tapparella": "cover", "tapparelle": "cover", "serranda": "cover", "tenda": "cover", "tende": "cover",
-    "persiana": "cover", "garage": "cover garage", "cancello": "cover gate",
-    "termostato": "climate", "clima": "climate", "condizionatore": "climate", "climatizzatore": "climate",
-    "riscaldamento": "climate heat", "condizionatori": "climate",
-    "ventilatore": "fan", "aspirapolvere": "vacuum", "robot": "vacuum", "serratura": "lock",
-    "allarme": "alarm_control_panel", "scena": "scene", "scene": "scene", "automazione": "automation",
-    "tv": "media_player tv", "televisore": "media_player tv", "cassa": "media_player", "speaker": "media_player",
-    "altoparlante": "media_player", "temperatura": "temperature", "umidita": "humidity",
-    "consumo": "power", "potenza": "power", "energia": "energy", "batteria": "battery",
-    "autonomia": "range battery", "porta": "door", "finestra": "window", "movimento": "motion",
-    "presenza": "occupancy presence", "sensore": "sensor", "pulsante": "button", "meteo": "weather",
+    "luce": "light",
+    "luci": "light",
+    "lampada": "light",
+    "lampadina": "light",
+    "faretti": "light",
+    "interruttore": "switch",
+    "presa": "switch",
+    "prese": "switch",
+    "spina": "switch",
+    "tapparella": "cover",
+    "tapparelle": "cover",
+    "serranda": "cover",
+    "tenda": "cover",
+    "tende": "cover",
+    "persiana": "cover",
+    "garage": "cover garage",
+    "cancello": "cover gate",
+    "termostato": "climate",
+    "clima": "climate",
+    "condizionatore": "climate",
+    "climatizzatore": "climate",
+    "riscaldamento": "climate heat",
+    "condizionatori": "climate",
+    "ventilatore": "fan",
+    "aspirapolvere": "vacuum",
+    "robot": "vacuum",
+    "serratura": "lock",
+    "allarme": "alarm_control_panel",
+    "scena": "scene",
+    "scene": "scene",
+    "automazione": "automation",
+    "tv": "media_player tv",
+    "televisore": "media_player tv",
+    "cassa": "media_player",
+    "speaker": "media_player",
+    "altoparlante": "media_player",
+    "temperatura": "temperature",
+    "umidita": "humidity",
+    "consumo": "power",
+    "potenza": "power",
+    "energia": "energy",
+    "batteria": "battery",
+    "autonomia": "range battery",
+    "porta": "door",
+    "finestra": "window",
+    "movimento": "motion",
+    "presenza": "occupancy presence",
+    "sensore": "sensor",
+    "pulsante": "button",
+    "meteo": "weather",
 }
 
 
@@ -76,16 +138,21 @@ class HassClient:
         self.session = requests.Session()
         self.session.headers.update({"Authorization": f"Bearer {token}", "Content-Type": "application/json"})
         self.session.verify = HASS_VERIFY_SSL
-        retry = Retry(total=3, backoff_factor=0.4, status_forcelist=(502, 503, 504),
-                      allowed_methods=("GET",), raise_on_status=False)
+        retry = Retry(
+            total=3,
+            backoff_factor=0.4,
+            status_forcelist=(502, 503, 504),
+            allowed_methods=("GET",),
+            raise_on_status=False,
+        )
         self.session.mount("http://", HTTPAdapter(max_retries=retry, pool_maxsize=10))
         self.session.mount("https://", HTTPAdapter(max_retries=retry, pool_maxsize=10))
         self._lock = threading.Lock()
-        self._stati: Optional[list[dict]] = None
+        self._stati: list[dict] | None = None
         self._stati_ts = 0.0
         self._aree: dict[str, str] = {}
         self._aree_ts = 0.0
-        self._servizi: Optional[dict] = None
+        self._servizi: dict | None = None
         self._servizi_ts = 0.0
         self.audit = DATA_DIR / "hass_audit.log"
 
@@ -129,19 +196,21 @@ class HassClient:
             return self._req("GET", f"/api/states/{entity_id}")
         except HassError as e:
             if "non trovata" in str(e):
-                raise HassError(f"Entita' '{entity_id}' inesistente. Usa hass_cerca_entita per trovare l'ID corretto.")
+                raise HassError(f"Entità '{entity_id}' inesistente. Usa hass_cerca_entita per trovare l'ID corretto.")
             raise
 
     def aree(self) -> dict[str, str]:
         with self._lock:
             if self._aree and time.monotonic() - self._aree_ts < 300:
                 return self._aree
-        tpl = ("{{ {'e': states | map(attribute='entity_id') | list, "
-               "'a': states | map(attribute='entity_id') | map('area_name') | list} | tojson }}")
+        tpl = (
+            "{{ {'e': states | map(attribute='entity_id') | list, "
+            "'a': states | map(attribute='entity_id') | map('area_name') | list} | tojson }}"
+        )
         try:
             testo = self._req("POST", "/api/template", json={"template": tpl})
             dati = json.loads(testo) if isinstance(testo, str) else testo
-            mappa = {e: a for e, a in zip(dati["e"], dati["a"]) if a}
+            mappa = {e: a for e, a in zip(dati["e"], dati["a"], strict=False) if a}
         except Exception as e:
             logger.warning(f"Aree HA non disponibili (serve un token admin per /api/template): {e}")
             mappa = {}
@@ -161,10 +230,18 @@ class HassClient:
 
     def storico(self, entity_id: str, ore: float) -> list[dict]:
         valida_entity(entity_id)
-        inizio = (datetime.now(timezone.utc) - timedelta(hours=ore)).isoformat()
-        dati = self._req("GET", f"/api/history/period/{quote(inizio)}",
-                         params={"filter_entity_id": entity_id, "minimal_response": "",
-                                 "no_attributes": "", "significant_changes_only": ""}, timeout=30)
+        inizio = (datetime.now(UTC) - timedelta(hours=ore)).isoformat()
+        dati = self._req(
+            "GET",
+            f"/api/history/period/{quote(inizio)}",
+            params={
+                "filter_entity_id": entity_id,
+                "minimal_response": "",
+                "no_attributes": "",
+                "significant_changes_only": "",
+            },
+            timeout=30,
+        )
         return dati[0] if dati else []
 
     # --- scritture ---
@@ -176,21 +253,19 @@ class HassClient:
         return res
 
     def registra_audit(self, testo: str) -> None:
-        with contextlib.suppress(Exception):
-            with open(self.audit, "a", encoding="utf-8") as fh:
-                fh.write(f"{now().isoformat(timespec='seconds')} {testo}\n")
+        scrivi_registro(self.audit, f"{now().isoformat(timespec='seconds')} {testo}")
 
 
 HASS = HassClient(HASS_URL, HASS_TOKEN) if HASS_TOKEN else None
 
 
 def valida_entity(entity_id: str) -> str:
-    if not entity_id or not _RE_ENTITY.match(entity_id):
+    if not entity_id or not RE_ENTITY.match(entity_id):
         raise HassError(f"entity_id non valido: '{entity_id}' (formato atteso: dominio.nome, es. light.cucina)")
     return entity_id
 
 
-def _hass() -> HassClient:
+def client_hass() -> HassClient:
     if HASS is None:
         raise UserError("Home Assistant non configurato (imposta HASS_URL e HASS_TOKEN).")
     return HASS
@@ -210,7 +285,7 @@ def formatta_entita(e: dict, aree: dict[str, str], dettaglio: bool = False) -> s
     attrs = e.get("attributes", {}) or {}
     nome = attrs.get("friendly_name", "")
     unita = attrs.get("unit_of_measurement", "")
-    riga = f"• {eid}"
+    riga = f"- {eid}"
     if nome:
         riga += f" «{nome}»"
     riga += f" = {e.get('state')}{(' ' + unita) if unita else ''}"
@@ -228,8 +303,18 @@ def formatta_entita(e: dict, aree: dict[str, str], dettaglio: bool = False) -> s
                 riga += f"\n    {k}: {_valore_attr(k, attrs[k])}"
     else:
         utili = []
-        for k in ("device_class", "current_temperature", "temperature", "hvac_action", "current_position",
-                  "brightness", "media_title", "media_artist", "volume_level", "battery_level"):
+        for k in (
+            "device_class",
+            "current_temperature",
+            "temperature",
+            "hvac_action",
+            "current_position",
+            "brightness",
+            "media_title",
+            "media_artist",
+            "volume_level",
+            "battery_level",
+        ):
             if attrs.get(k) is not None:
                 utili.append(f"{k}={_valore_attr(k, attrs[k])}")
         if utili:
@@ -239,13 +324,23 @@ def formatta_entita(e: dict, aree: dict[str, str], dettaglio: bool = False) -> s
 
 def _testo_ricerca(e: dict, aree: dict[str, str]) -> str:
     attrs = e.get("attributes", {}) or {}
-    return normalizza(" ".join(str(x) for x in (
-        e["entity_id"], attrs.get("friendly_name", ""), aree.get(e["entity_id"], ""),
-        attrs.get("device_class", ""), e["entity_id"].split(".")[0])))
+    return normalizza(
+        " ".join(
+            str(x)
+            for x in (
+                e["entity_id"],
+                attrs.get("friendly_name", ""),
+                aree.get(e["entity_id"], ""),
+                attrs.get("device_class", ""),
+                e["entity_id"].split(".")[0],
+            )
+        )
+    )
 
 
-def cerca_entita(stati: list[dict], aree: dict[str, str], testo: str = "", dominio: str = "",
-                 area: str = "") -> list[tuple[float, dict]]:
+def cerca_entita(
+    stati: list[dict], aree: dict[str, str], testo: str = "", dominio: str = "", area: str = ""
+) -> list[tuple[float, dict]]:
     dominio = (dominio or "").strip().lower()
     area_n = normalizza(area) if area else ""
     toks = []
@@ -259,8 +354,11 @@ def cerca_entita(stati: list[dict], aree: dict[str, str], testo: str = "", domin
         eid = e["entity_id"]
         if dominio and not eid.startswith(dominio + "."):
             continue
-        if area_n and area_n not in normalizza(aree.get(eid, "")) and area_n not in normalizza(
-                e.get("attributes", {}).get("friendly_name", "")):
+        if (
+            area_n
+            and area_n not in normalizza(aree.get(eid, ""))
+            and area_n not in normalizza(e.get("attributes", {}).get("friendly_name", ""))
+        ):
             continue
         hay = _testo_ricerca(e, aree)
         parole = hay.split()
@@ -289,7 +387,7 @@ def cerca_entita(stati: list[dict], aree: dict[str, str], testo: str = "", domin
     "hass_cerca_entita",
     title="Cerca dispositivi della casa",
     description=(
-        "Cerca entita' di Home Assistant per nome, stanza/area, tipo o dominio e ne mostra lo stato attuale. "
+        "Cerca entità di Home Assistant per nome, stanza/area, tipo o dominio e ne mostra lo stato attuale. "
         "Capisce termini italiani (luce, tapparella, termostato, temperatura, batteria, consumo...). "
         "Esempi: testo='temperatura soggiorno'; testo='mokka autonomia'; dominio='light' area='cucina'. "
         "Usalo SEMPRE per trovare l'entity_id corretto prima di leggere o controllare un dispositivo."
@@ -298,30 +396,32 @@ def cerca_entita(stati: list[dict], aree: dict[str, str], testo: str = "", domin
     read_only=True,
 )
 async def hass_cerca_entita(testo: str = "", dominio: str = "", area: str = "", limite: int = 25) -> str:
-    h = _hass()
+    h = client_hass()
     stati, aree = await asyncio.gather(asyncio.to_thread(h.stati), asyncio.to_thread(h.aree))
     risultati = cerca_entita(stati, aree, testo, dominio, area)
     limite = max(1, min(int(limite or 25), 100))
     if not risultati:
-        return (f"Nessuna entita' trovata per testo='{testo}' dominio='{dominio}' area='{area}'. "
-                f"Prova termini diversi o hass_panoramica per vedere domini e aree.")
+        return (
+            f"Nessuna entità trovata per testo='{testo}' dominio='{dominio}' area='{area}'. "
+            f"Prova termini diversi o hass_panoramica per vedere domini e aree."
+        )
     righe = [formatta_entita(e, aree) for _, e in risultati[:limite]]
     extra = f"\n(+{len(risultati) - limite} altre: affina la ricerca)" if len(risultati) > limite else ""
-    return f"{min(len(risultati), limite)} entita' trovate:\n" + "\n".join(righe) + extra
+    return f"{min(len(risultati), limite)} entità trovate:\n" + "\n".join(righe) + extra
 
 
 @tool(
     "hass_stato",
     title="Stato dei dispositivi",
     description=(
-        "Legge lo stato attuale (in tempo reale) e tutti gli attributi di una o piu' entita' di Home Assistant. "
-        "entity_id: uno o piu' ID separati da virgola (es. 'sensor.temperatura_soggiorno,light.cucina')."
+        "Legge lo stato attuale (in tempo reale) e tutti gli attributi di una o più entità di Home Assistant. "
+        "entity_id: uno o più ID separati da virgola (es. 'sensor.temperatura_soggiorno,light.cucina')."
     ),
     group="hass",
     read_only=True,
 )
 async def hass_stato(entity_id: str) -> str:
-    h = _hass()
+    h = client_hass()
     ids = [x.strip() for x in entity_id.split(",") if x.strip()][:20]
     if not ids:
         raise UserError("Specifica almeno un entity_id.")
@@ -330,8 +430,8 @@ async def hass_stato(entity_id: str) -> str:
     aree = await asyncio.to_thread(h.aree)
     risultati = await asyncio.gather(*[asyncio.to_thread(h.stato, i) for i in ids], return_exceptions=True)
     righe = []
-    for i, r in zip(ids, risultati):
-        righe.append(f"• {i}: {r}" if isinstance(r, Exception) else formatta_entita(r, aree, dettaglio=True))
+    for i, r in zip(ids, risultati, strict=False):
+        righe.append(f"- {i}: {r}" if isinstance(r, Exception) else formatta_entita(r, aree, dettaglio=True))
     return "\n".join(righe)
 
 
@@ -339,21 +439,23 @@ async def hass_stato(entity_id: str) -> str:
     "hass_panoramica",
     title="Panoramica della casa",
     description=(
-        "Riepilogo della casa: numero di entita' per dominio, elenco aree, e cosa e' attivo ora "
+        "Riepilogo della casa: numero di entità per dominio, elenco aree, e cosa è attivo ora "
         "(luci accese, dispositivi in funzione, porte/finestre aperte, clima, media in riproduzione, avvisi)."
     ),
     group="hass",
     read_only=True,
 )
 async def hass_panoramica() -> str:
-    h = _hass()
+    h = client_hass()
     stati, aree = await asyncio.gather(asyncio.to_thread(h.stati, True), asyncio.to_thread(h.aree))
     domini: dict[str, int] = {}
     for e in stati:
         d = e["entity_id"].split(".")[0]
         domini[d] = domini.get(d, 0) + 1
-    righe = [f"Home Assistant: {len(stati)} entita'",
-             "Domini: " + ", ".join(f"{d} ({n})" for d, n in sorted(domini.items(), key=lambda x: -x[1]))]
+    righe = [
+        f"Home Assistant: {len(stati)} entità",
+        "Domini: " + ", ".join(f"{d} ({n})" for d, n in sorted(domini.items(), key=lambda x: -x[1])),
+    ]
     nomi_aree = sorted(set(aree.values()))
     if nomi_aree:
         righe.append("Aree: " + ", ".join(nomi_aree))
@@ -366,19 +468,33 @@ async def hass_panoramica() -> str:
 
     dc = lambda e: e.get("attributes", {}).get("device_class")  # noqa: E731
     sel(lambda e: e["entity_id"].startswith("light.") and e["state"] == "on", "Luci accese")
-    sel(lambda e: e["entity_id"].startswith(("switch.", "fan.", "vacuum.")) and e["state"] in ("on", "cleaning"),
-        "Interruttori/dispositivi accesi")
-    sel(lambda e: e["entity_id"].startswith("binary_sensor.") and dc(e) in ("door", "window", "garage_door", "opening")
-        and e["state"] == "on", "Porte/finestre aperte")
+    sel(
+        lambda e: e["entity_id"].startswith(("switch.", "fan.", "vacuum.")) and e["state"] in ("on", "cleaning"),
+        "Interruttori/dispositivi accesi",
+    )
+    sel(
+        lambda e: (
+            e["entity_id"].startswith("binary_sensor.")
+            and dc(e) in ("door", "window", "garage_door", "opening")
+            and e["state"] == "on"
+        ),
+        "Porte/finestre aperte",
+    )
     sel(lambda e: e["entity_id"].startswith("cover.") and e["state"] in ("open", "opening"), "Coperture aperte")
     sel(lambda e: e["entity_id"].startswith("climate.") and e["state"] not in ("off", "unavailable"), "Clima attivo")
     sel(lambda e: e["entity_id"].startswith("media_player.") and e["state"] in ("playing", "paused"), "Media")
     sel(lambda e: e["entity_id"].startswith(("lock.", "alarm_control_panel.")), "Sicurezza")
-    sel(lambda e: e["entity_id"].startswith("persistent_notification.") or
-        (e["entity_id"].startswith("update.") and e["state"] == "on"), "Notifiche/aggiornamenti", 10)
+    sel(
+        lambda e: (
+            e["entity_id"].startswith("persistent_notification.")
+            or (e["entity_id"].startswith("update.") and e["state"] == "on")
+        ),
+        "Notifiche/aggiornamenti",
+        10,
+    )
     non_disp = sum(1 for e in stati if e["state"] == "unavailable")
     if non_disp:
-        righe.append(f"\nEntita' non disponibili: {non_disp}")
+        righe.append(f"\nEntità non disponibili: {non_disp}")
     return "\n".join(righe)
 
 
@@ -387,13 +503,13 @@ async def hass_panoramica() -> str:
     title="Storico dei dispositivi",
     description=(
         "Storico di un'entita' nelle ultime N ore (max 168): per sensori numerici min/max/media e andamento, "
-        "per gli altri l'elenco dei cambi di stato. Es: 'quanto ha consumato oggi', 'quando si e' aperta la porta'."
+        "per gli altri l'elenco dei cambi di stato. Es: 'quanto ha consumato oggi', 'quando si è aperta la porta'."
     ),
     group="hass",
     read_only=True,
 )
 async def hass_storico(entity_id: str, ore: float = 24) -> str:
-    h = _hass()
+    h = client_hass()
     ore = max(0.1, min(float(ore or 24), 168))
     dati = await asyncio.to_thread(h.storico, entity_id.strip(), ore)
     if not dati:
@@ -413,9 +529,11 @@ async def hass_storico(entity_id: str, ore: float = 24) -> str:
         valori = [v for _, v in numerici]
         imin = min(range(len(valori)), key=valori.__getitem__)
         imax = max(range(len(valori)), key=valori.__getitem__)
-        righe.append(f"Attuale: {valori[-1]:g} {unita} · Min: {valori[imin]:g} {unita} ({fmt_dt(numerici[imin][0])}) · "
-                     f"Max: {valori[imax]:g} {unita} ({fmt_dt(numerici[imax][0])}) · "
-                     f"Media: {sum(valori) / len(valori):.2f} {unita}")
+        righe.append(
+            f"Attuale: {valori[-1]:g} {unita} · Min: {valori[imin]:g} {unita} ({fmt_dt(numerici[imin][0])}) · "
+            f"Max: {valori[imax]:g} {unita} ({fmt_dt(numerici[imax][0])}) · "
+            f"Media: {sum(valori) / len(valori):.2f} {unita}"
+        )
         passo = max(1, len(numerici) // 24)
         campioni = numerici[::passo][-24:]
         righe.append("Andamento: " + " | ".join(f"{ts.astimezone(TZ):%d/%m %H:%M} {v:g}" for ts, v in campioni))
@@ -430,27 +548,37 @@ async def hass_storico(entity_id: str, ore: float = 24) -> str:
 @tool(
     "hass_servizi",
     title="Azioni disponibili della casa",
-    description="Elenca i servizi (azioni) disponibili per un dominio di Home Assistant con i relativi parametri, es. dominio='climate' o 'media_player'.",
+    description=(
+        "Elenca i servizi (azioni) disponibili per un dominio di Home Assistant con i relativi parametri, "
+        "es. dominio='climate' o 'media_player'."
+    ),
     group="hass",
     read_only=True,
 )
 async def hass_servizi(dominio: str) -> str:
-    h = _hass()
+    h = client_hass()
     dominio = dominio.strip().lower()
     servizi = await asyncio.to_thread(h.servizi)
     if dominio not in servizi:
         raise UserError(f"Dominio '{dominio}' senza servizi. Domini disponibili: {', '.join(sorted(servizi))}")
-    righe = [f"Servizi del dominio {dominio}" + ("" if dominio in HASS_ALLOWED_DOMAINS else
-                                                 " (ATTENZIONE: dominio non abilitato al controllo)")]
+    righe = [
+        f"Servizi del dominio {dominio}"
+        + ("" if dominio in HASS_ALLOWED_DOMAINS else " (ATTENZIONE: dominio non abilitato al controllo)")
+    ]
     for nome, info in sorted(servizi[dominio].items()):
         if not _servizio_permesso(dominio, nome):
             continue
         campi = info.get("fields", {}) or {}
         desc_campi = ", ".join(
-            f"{k}{'*' if v.get('required') else ''}" + (f" (es. {v['example']})" if v.get("example") is not None else "")
-            for k, v in campi.items() if isinstance(v, dict) and k != "advanced_fields")
-        righe.append(f"- {dominio}.{nome}: {info.get('description', '')[:150]}" +
-                     (f"\n    parametri: {desc_campi}" if desc_campi else ""))
+            f"{k}{'*' if v.get('required') else ''}"
+            + (f" (es. {v['example']})" if v.get("example") is not None else "")
+            for k, v in campi.items()
+            if isinstance(v, dict) and k != "advanced_fields"
+        )
+        righe.append(
+            f"- {dominio}.{nome}: {info.get('description', '')[:150]}"
+            + (f"\n    parametri: {desc_campi}" if desc_campi else "")
+        )
     return "\n".join(righe)
 
 
@@ -468,14 +596,14 @@ def _servizio_permesso(dominio: str, servizio: str) -> bool:
     return True
 
 
-def _match(entity_id: str, patterns: list[str]) -> bool:
+def corrisponde_pattern(entity_id: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatch(entity_id, p) for p in patterns)
 
 
 def _richiede_conferma(entita: dict) -> bool:
     eid = entita["entity_id"]
     dom = eid.split(".")[0]
-    if dom in HASS_CONFIRM_DOMAINS or _match(eid, HASS_CONFIRM_ENTITIES):
+    if dom in HASS_CONFIRM_DOMAINS or corrisponde_pattern(eid, HASS_CONFIRM_ENTITIES):
         return True
     dc = (entita.get("attributes") or {}).get("device_class")
     return dom == "cover" and dc in ("garage", "gate", "door")
@@ -485,95 +613,125 @@ def _richiede_conferma(entita: dict) -> bool:
     "hass_esegui_servizio",
     title="Controllo dei dispositivi",
     description=(
-        "Esegue un servizio (azione) di Home Assistant su una o piu' entita'. Esempi:\n"
-        "- accendere luce al 50%: dominio='light' servizio='turn_on' entity_id='light.cucina' dati={\"brightness_pct\":50}\n"
+        "Esegue un servizio (azione) di Home Assistant su una o più entità. Esempi:\n"
+        "- accendere luce al 50%: dominio='light' servizio='turn_on' entity_id='light.cucina' "
+        "dati={\"brightness_pct\":50}\n"
         "- spegnere: servizio='turn_off'; invertire: 'toggle'\n"
-        "- tapparella: dominio='cover' servizio='open_cover'/'close_cover'/'set_cover_position' dati={\"position\":30}\n"
+        "- tapparella: dominio='cover' servizio='open_cover'/'close_cover'/'set_cover_position' "
+        "dati={\"position\":30}\n"
         "- termostato: dominio='climate' servizio='set_temperature' dati={\"temperature\":21}\n"
         "- volume: dominio='media_player' servizio='volume_set' dati={\"volume_level\":0.3}\n"
         "- scena/script: dominio='scene' servizio='turn_on' entity_id='scene.cinema'\n"
         "- previsioni: dominio='weather' servizio='get_forecasts' dati={\"type\":\"daily\"}\n"
-        "entity_id accetta piu' ID separati da virgola. Trova prima gli ID con hass_cerca_entita. "
+        "entity_id accetta più ID separati da virgola. Trova prima gli ID con hass_cerca_entita. "
         "Serrature, allarmi, garage e cancelli richiedono conferma=true: chiedi PRIMA il consenso esplicito all'utente."
     ),
     group="hass",
     destructive=True,
 )
-async def hass_esegui_servizio(dominio: str, servizio: str, entity_id: str = "",
-                               dati: Optional[dict[str, Any]] = None, conferma: bool = False) -> str:
-    h = _hass()
+async def hass_esegui_servizio(
+    dominio: str, servizio: str, entity_id: str = "", dati: dict[str, Any] | None = None, conferma: bool = False
+) -> str:
+    h = client_hass()
     if HASS_READ_ONLY:
-        raise UserError("Home Assistant e' configurato in sola lettura (HASS_READ_ONLY=true).")
-    dominio, servizio = dominio.strip().lower(), servizio.strip().lower()
-    if "." in servizio and not dominio:
-        dominio, servizio = servizio.split(".", 1)
-    if not _RE_SLUG.match(dominio) or not _RE_SLUG.match(servizio):
-        raise UserError("Dominio o servizio non validi.")
-    if dominio not in HASS_ALLOWED_DOMAINS:
-        raise UserError(f"Il dominio '{dominio}' non e' abilitato al controllo. Domini consentiti: "
-                        f"{', '.join(sorted(HASS_ALLOWED_DOMAINS))}")
-    if not _servizio_permesso(dominio, servizio):
-        raise UserError(f"Il servizio {dominio}.{servizio} non e' consentito per motivi di sicurezza.")
-
-    dati = dict(dati or {})
-    if isinstance(dati.get("target"), dict):
-        dati.update(dati.pop("target"))
-    ids_param = [x.strip() for x in entity_id.split(",") if x.strip()]
-    ids_dati = dati.pop("entity_id", [])
-    ids_dati = [ids_dati] if isinstance(ids_dati, str) else list(ids_dati or [])
-    ids = list(dict.fromkeys(ids_param + [str(x).strip() for x in ids_dati]))
-    for chiave in ("area_id", "device_id", "floor_id", "label_id"):
-        if chiave in dati:
-            raise UserError(f"Il parametro '{chiave}' non e' consentito: indica esplicitamente gli entity_id.")
+        raise UserError("Home Assistant è configurato in sola lettura (HASS_READ_ONLY=true).")
+    dominio, servizio = _controlla_servizio(dominio, servizio)
+    ids, dati = _estrai_entita(entity_id, dati)
 
     servizi = await asyncio.to_thread(h.servizi)
     if dominio not in servizi or servizio not in servizi[dominio]:
         disponibili = ", ".join(sorted(servizi.get(dominio, {}))) or "nessuno"
         raise UserError(f"Servizio {dominio}.{servizio} inesistente. Servizi di {dominio}: {disponibili}")
     vuole_risposta = "response" in servizi[dominio][servizio]
-
     if not ids and dominio not in _DOMINI_SENZA_ENTITA:
         raise UserError("Specifica entity_id (usa hass_cerca_entita per trovarlo).")
-    stati = {e["entity_id"]: e for e in await asyncio.to_thread(h.stati)}
-    sensibili = []
-    for eid in ids:
-        if eid == "all":
-            raise UserError("entity_id 'all' non consentito: elenca le entita' esplicitamente.")
-        valida_entity(eid)
-        if eid not in stati:
-            stati.update({e["entity_id"]: e for e in await asyncio.to_thread(h.stati, True)})
-            if eid not in stati:
-                raise UserError(f"Entita' '{eid}' inesistente. Usa hass_cerca_entita.")
-        dom_e = eid.split(".")[0]
-        if dominio != "homeassistant" and dom_e != dominio and dominio not in ("tts", "notify", "media_player"):
-            raise UserError(f"L'entita' {eid} non appartiene al dominio '{dominio}' "
-                            f"(usa dominio='{dom_e}' oppure 'homeassistant').")
-        if dom_e not in HASS_ALLOWED_DOMAINS:
-            raise UserError(f"Le entita' del dominio '{dom_e}' non sono controllabili.")
-        if _match(eid, HASS_BLOCKED_ENTITIES):
-            raise UserError(f"L'entita' {eid} e' bloccata dalla configurazione di sicurezza.")
-        if HASS_ALLOWED_ENTITIES and not _match(eid, HASS_ALLOWED_ENTITIES):
-            raise UserError(f"L'entita' {eid} non e' nell'elenco delle entita' controllabili.")
-        if _richiede_conferma(stati[eid]):
-            sensibili.append(eid)
+
+    sensibili = await _controlla_entita(h, dominio, ids)
     if sensibili and not conferma:
-        return (f"⚠️ AZIONE SENSIBILE: {dominio}.{servizio} su {', '.join(sensibili)}. "
-                f"Chiedi all'utente una conferma esplicita; solo se conferma ripeti la chiamata con conferma=true.")
+        return (
+            f"AZIONE SENSIBILE: {dominio}.{servizio} su {', '.join(sensibili)}. "
+            f"Chiedi all'utente una conferma esplicita; solo se conferma ripeti la chiamata con conferma=true."
+        )
 
     if ids:
         dati["entity_id"] = ids if len(ids) > 1 else ids[0]
     h.registra_audit(f"CALL {dominio}.{servizio} {json.dumps(dati, ensure_ascii=False)} conferma={conferma}")
     logger.info(f"[hass] {dominio}.{servizio} {dati}")
     risposta = await asyncio.to_thread(h.chiama_servizio, dominio, servizio, dati, vuole_risposta)
+    return await _esito_servizio(h, dominio, servizio, ids, risposta)
 
-    righe = [f"✅ Eseguito {dominio}.{servizio}" + (f" su {', '.join(ids)}" if ids else "")]
+
+def _controlla_servizio(dominio: str, servizio: str) -> tuple[str, str]:
+    """Normalizza e valida dominio e servizio secondo le regole di sicurezza."""
+    dominio, servizio = dominio.strip().lower(), servizio.strip().lower()
+    if "." in servizio and not dominio:
+        dominio, servizio = servizio.split(".", 1)
+    if not _RE_SLUG.match(dominio) or not _RE_SLUG.match(servizio):
+        raise UserError("Dominio o servizio non validi.")
+    if dominio not in HASS_ALLOWED_DOMAINS:
+        raise UserError(
+            f"Il dominio '{dominio}' non è abilitato al controllo. Domini consentiti: "
+            f"{', '.join(sorted(HASS_ALLOWED_DOMAINS))}"
+        )
+    if not _servizio_permesso(dominio, servizio):
+        raise UserError(f"Il servizio {dominio}.{servizio} non è consentito per motivi di sicurezza.")
+    return dominio, servizio
+
+
+def _estrai_entita(entity_id: str, dati: dict[str, Any] | None) -> tuple[list[str], dict[str, Any]]:
+    """Riunisce gli entity_id dal parametro e dai dati; rifiuta i target per area, dispositivo, piano o etichetta."""
+    dati = dict(dati or {})
+    if isinstance(dati.get("target"), dict):
+        dati.update(dati.pop("target"))
+    ids_param = [x.strip() for x in entity_id.split(",") if x.strip()]
+    ids_dati = dati.pop("entity_id", [])
+    ids_dati = [ids_dati] if isinstance(ids_dati, str) else list(ids_dati or [])
+    for chiave in ("area_id", "device_id", "floor_id", "label_id"):
+        if chiave in dati:
+            raise UserError(f"Il parametro '{chiave}' non è consentito: indica esplicitamente gli entity_id.")
+    return list(dict.fromkeys(ids_param + [str(x).strip() for x in ids_dati])), dati
+
+
+async def _controlla_entita(h: HassClient, dominio: str, ids: list[str]) -> list[str]:
+    """Verifica esistenza, dominio e liste di sicurezza; ritorna le entità che richiedono conferma."""
+    stati = {e["entity_id"]: e for e in await asyncio.to_thread(h.stati)}
+    sensibili = []
+    for eid in ids:
+        if eid == "all":
+            raise UserError("entity_id 'all' non consentito: elenca le entità esplicitamente.")
+        valida_entity(eid)
+        if eid not in stati:
+            stati.update({e["entity_id"]: e for e in await asyncio.to_thread(h.stati, True)})
+            if eid not in stati:
+                raise UserError(f"Entità '{eid}' inesistente. Usa hass_cerca_entita.")
+        dom_e = eid.split(".")[0]
+        if dominio != "homeassistant" and dom_e != dominio and dominio not in ("tts", "notify", "media_player"):
+            raise UserError(
+                f"L'entità {eid} non appartiene al dominio '{dominio}' (usa dominio='{dom_e}' oppure 'homeassistant')."
+            )
+        if dom_e not in HASS_ALLOWED_DOMAINS:
+            raise UserError(f"Le entità del dominio '{dom_e}' non sono controllabili.")
+        if corrisponde_pattern(eid, HASS_BLOCKED_ENTITIES):
+            raise UserError(f"L'entità {eid} è bloccata dalla configurazione di sicurezza.")
+        if HASS_ALLOWED_ENTITIES and not corrisponde_pattern(eid, HASS_ALLOWED_ENTITIES):
+            raise UserError(f"L'entità {eid} non è nell'elenco delle entità controllabili.")
+        if _richiede_conferma(stati[eid]):
+            sensibili.append(eid)
+    return sensibili
+
+
+async def _esito_servizio(h: HassClient, dominio: str, servizio: str, ids: list[str], risposta: Any) -> str:
+    """Testo di esito: risposta del servizio (se c'è) e nuovo stato delle entità."""
+    righe = [f"Eseguito {dominio}.{servizio}" + (f" su {', '.join(ids)}" if ids else "")]
     if isinstance(risposta, dict) and risposta.get("service_response"):
-        righe.append("Risposta: " + tronca(json.dumps(risposta["service_response"], ensure_ascii=False, indent=1), 6000))
+        righe.append(
+            "Risposta: " + tronca(json.dumps(risposta["service_response"], ensure_ascii=False, indent=1), 6000)
+        )
     if ids:
         await asyncio.sleep(1.0)
         aree = await asyncio.to_thread(h.aree)
         nuovi = await asyncio.gather(*[asyncio.to_thread(h.stato, i) for i in ids[:10]], return_exceptions=True)
         righe.append("Stato attuale:")
-        for i, n in zip(ids, nuovi):
-            righe.append(f"• {i}: {n}" if isinstance(n, Exception) else formatta_entita(n, aree))
+        for i, n in zip(ids, nuovi, strict=False):
+            righe.append(f"- {i}: {n}" if isinstance(n, Exception) else formatta_entita(n, aree))
     return "\n".join(righe)

@@ -1,10 +1,10 @@
 """Strumenti: memoria permanente delle informazioni sull'utente."""
+
 import secrets
 
 from nucleo.configurazione import DATA_DIR
 from nucleo.server import UserError, tool
-from nucleo.utilita import now, normalizza, JsonStore
-
+from nucleo.utilita import JsonStore, normalizza, now
 
 MEMORIA = JsonStore(DATA_DIR / "memoria.json", [])
 
@@ -26,9 +26,13 @@ async def memoria_salva(testo: str, categoria: str = "generale") -> str:
     dati = MEMORIA.load()
     for m in dati:
         if normalizza(m["testo"]) == normalizza(testo):
-            return f"Gia' presente in memoria (id {m['id']})."
-    voce = {"id": secrets.token_hex(3), "testo": testo, "categoria": categoria.strip().lower() or "generale",
-            "creato": now().isoformat(timespec="seconds")}
+            return f"Già presente in memoria (id {m['id']})."
+    voce = {
+        "id": secrets.token_hex(3),
+        "testo": testo,
+        "categoria": categoria.strip().lower() or "generale",
+        "creato": now().isoformat(timespec="seconds"),
+    }
     dati.append(voce)
     MEMORIA.save(dati)
     return f"Salvato in memoria (id {voce['id']}, categoria {voce['categoria']})."

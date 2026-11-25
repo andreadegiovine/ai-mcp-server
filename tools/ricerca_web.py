@@ -1,16 +1,17 @@
 """Strumenti: ricerca sul web (Google, DuckDuckGo, Bing) e notizie (Google News)."""
+
 import asyncio
 import base64
 import contextlib
 import re
 import xml.etree.ElementTree as ET
-from urllib.parse import quote_plus, urlparse, parse_qs
+from urllib.parse import parse_qs, quote_plus, urlparse
 
+from nucleo.browser import BROWSER, PLAYWRIGHT_DISPONIBILE, accetta_cookie
 from nucleo.configurazione import logger
+from nucleo.rete import http_get
 from nucleo.server import UserError, tool
 from nucleo.utilita import fmt_dt
-from nucleo.rete import http_get
-from nucleo.browser import PLAYWRIGHT_DISPONIBILE, BROWSER, _accetta_cookie
 
 try:
     from ddgs import DDGS
@@ -74,15 +75,29 @@ def _filtra_risultati(risultati: list[dict], n: int) -> list[dict]:
         url = _pulisci_url_risultato(r.get("url", ""))
         if not url.startswith("http"):
             continue
-        if any(x in url for x in ("google.com/aclk", "googleadservices", "google.it/aclk",
-                                   "bing.com/aclk", "/search?", "accounts.google")):
+        if any(
+            x in url
+            for x in (
+                "google.com/aclk",
+                "googleadservices",
+                "google.it/aclk",
+                "bing.com/aclk",
+                "/search?",
+                "accounts.google",
+            )
+        ):
             continue
         chiave = url.split("#")[0].rstrip("/")
         if chiave in visti:
             continue
         visti.add(chiave)
-        puliti.append({"url": url, "titolo": (r.get("titolo") or "").strip(),
-                       "snippet": re.sub(r"\s+", " ", r.get("snippet") or "").strip()})
+        puliti.append(
+            {
+                "url": url,
+                "titolo": (r.get("titolo") or "").strip(),
+                "snippet": re.sub(r"\s+", " ", r.get("snippet") or "").strip(),
+            }
+        )
         if len(puliti) >= n:
             break
     return puliti
@@ -93,11 +108,11 @@ async def _cerca_google(query: str) -> list[dict]:
         url = f"https://www.google.it/search?q={quote_plus(query)}&hl=it&gl=it"
         await page.goto(url, wait_until="domcontentloaded", timeout=20000)
         if "consent." in page.url:
-            await _accetta_cookie(page)
+            await accetta_cookie(page)
             with contextlib.suppress(Exception):
                 await page.wait_for_url("**/search**", timeout=8000)
         else:
-            await _accetta_cookie(page)
+            await accetta_cookie(page)
         if "/sorry/" in page.url or await page.locator("#captcha-form, form#captcha").count():
             raise RuntimeError("Google ha mostrato un captcha")
         with contextlib.suppress(Exception):
@@ -107,9 +122,12 @@ async def _cerca_google(query: str) -> list[dict]:
 
 async def _cerca_bing(query: str) -> list[dict]:
     async with BROWSER.pagina() as page:
-        await page.goto(f"https://www.bing.com/search?q={quote_plus(query)}&setlang=it&cc=IT",
-                        wait_until="domcontentloaded", timeout=20000)
-        await _accetta_cookie(page)
+        await page.goto(
+            f"https://www.bing.com/search?q={quote_plus(query)}&setlang=it&cc=IT",
+            wait_until="domcontentloaded",
+            timeout=20000,
+        )
+        await accetta_cookie(page)
         with contextlib.suppress(Exception):
             await page.wait_for_selector("#b_results", timeout=10000)
         return await page.evaluate(_JS_BING)
@@ -128,7 +146,7 @@ def _cerca_ddg(query: str, n: int) -> list[dict]:
     description=(
         "Cerca sul web (Google, con ripiego automatico su DuckDuckGo e Bing) e restituisce i primi risultati "
         "organici: titolo, URL e descrizione. Usalo quando non sei sicuro di un'informazione, per dati "
-        "aggiornati o per verificare un'ipotesi; poi leggi le pagine piu' utili con leggi_pagina_web. "
+        "aggiornati o per verificare un'ipotesi; poi leggi le pagine più utili con leggi_pagina_web. "
         "Per notizie recenti preferisci cerca_notizie, per immagini cerca_immagini."
     ),
     read_only=True,
@@ -149,8 +167,9 @@ async def cerca_online(query: str, num_risultati: int = 10) -> str:
         try:
             risultati = _filtra_risultati(await asyncio.wait_for(fn(), timeout=35), n)
             if risultati:
-                righe = [f"{i}. {r['titolo']}\n   {r['url']}\n   {r['snippet']}".rstrip()
-                         for i, r in enumerate(risultati, 1)]
+                righe = [
+                    f"{i}. {r['titolo']}\n   {r['url']}\n   {r['snippet']}".rstrip() for i, r in enumerate(risultati, 1)
+                ]
                 return f"Risultati {nome} per '{query}':\n\n" + "\n\n".join(righe)
             errori.append(f"{nome}: nessun risultato")
         except Exception as e:
@@ -163,8 +182,8 @@ async def cerca_online(query: str, num_risultati: int = 10) -> str:
     "cerca_notizie",
     title="Cerca notizie",
     description=(
-        "Cerca le notizie piu' recenti su un argomento (Google News, in italiano) con titolo, fonte, data e link. "
-        "Usalo per attualita', eventi recenti, risultati sportivi, ultime notizie."
+        "Cerca le notizie più recenti su un argomento (Google News, in italiano) con titolo, fonte, data e link. "
+        "Usalo per attualità, eventi recenti, risultati sportivi, ultime notizie."
     ),
     read_only=True,
 )
@@ -183,6 +202,7 @@ async def cerca_notizie(argomento: str, num_risultati: int = 8) -> str:
             data_txt = it.findtext("pubDate") or ""
             with contextlib.suppress(Exception):
                 from email.utils import parsedate_to_datetime
+
                 data_txt = fmt_dt(parsedate_to_datetime(data_txt))
             righe.append(f"{i}. {titolo}\n   Fonte: {fonte} · {data_txt}\n   {link}")
         if righe:
@@ -193,8 +213,10 @@ async def cerca_notizie(argomento: str, num_risultati: int = 8) -> str:
         logger.warning(f"Google News fallito: {e}")
     if DDGS is not None:
         res = await asyncio.to_thread(lambda: DDGS().news(argomento, region="it-it", max_results=n))
-        righe = [f"{i}. {r.get('title')}\n   Fonte: {r.get('source')} · {r.get('date')}\n   {r.get('url')}"
-                 for i, r in enumerate(res or [], 1)]
+        righe = [
+            f"{i}. {r.get('title')}\n   Fonte: {r.get('source')} · {r.get('date')}\n   {r.get('url')}"
+            for i, r in enumerate(res or [], 1)
+        ]
         if righe:
             return f"Notizie su '{argomento}':\n\n" + "\n\n".join(righe)
     return f"Nessuna notizia trovata per '{argomento}'."

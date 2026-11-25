@@ -1,34 +1,36 @@
 """Browser Chromium (Playwright) condiviso dai tool web: sessione persistente e anti-SSRF."""
+
 import asyncio
 import contextlib
 import os
 import sys
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
-from nucleo.configurazione import _env, _env_int, DATA_DIR, TZ_NAME, logger
-from nucleo.server import FUNZIONALITA, UserError
+from nucleo.configurazione import DATA_DIR, TZ_NAME, env_int, env_str, logger
 from nucleo.rete import USER_AGENT, url_consentito
+from nucleo.server import FUNZIONALITA, UserError
 
 try:
-    from playwright.async_api import async_playwright, Browser, BrowserContext, Page, Playwright
+    from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 except ImportError:  # pragma: no cover
     async_playwright = None
 
 
-CHROMIUM_PATH = _env("CHROMIUM_PATH")
-BROWSER_PROXY = _env("BROWSER_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
-BROWSER_MAX_PAGES = _env_int("BROWSER_MAX_PAGES", 3)
+CHROMIUM_PATH = env_str("CHROMIUM_PATH")
+BROWSER_PROXY = env_str("BROWSER_PROXY") or os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy") or ""
+BROWSER_MAX_PAGES = env_int("BROWSER_MAX_PAGES", 3)
 PLAYWRIGHT_DISPONIBILE = async_playwright is not None
 FUNZIONALITA["web"] = PLAYWRIGHT_DISPONIBILE
 
+
 class BrowserManager:
     def __init__(self) -> None:
-        self._pw: Optional["Playwright"] = None
-        self._browser: Optional["Browser"] = None
-        self._context: Optional["BrowserContext"] = None
+        self._pw: "Playwright" | None = None
+        self._browser: "Browser" | None = None
+        self._context: "BrowserContext" | None = None
         self._lock = asyncio.Lock()
-        self._sem: Optional[asyncio.Semaphore] = None
+        self._sem: asyncio.Semaphore | None = None
         self._stato_file = DATA_DIR / "browser_state.json"
 
     async def _avvia(self) -> "BrowserContext":
@@ -38,8 +40,12 @@ class BrowserManager:
         self._pw = await async_playwright().start()
         opzioni: dict[str, Any] = {
             "headless": True,
-            "args": ["--disable-blink-features=AutomationControlled", "--no-sandbox",
-                     "--disable-dev-shm-usage", "--disable-gpu"],
+            "args": [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
         }
         if CHROMIUM_PATH:
             opzioni["executable_path"] = CHROMIUM_PATH
@@ -54,15 +60,21 @@ class BrowserManager:
             self._pw = None
             if "doesn't exist" in str(e) or "does not exist" in str(e):
                 percorso = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
-                comando = (f"PLAYWRIGHT_BROWSERS_PATH={percorso} " if percorso else "") + \
-                    f"{Path(sys.executable).parent / 'playwright'} install chromium"
+                comando = (
+                    f"PLAYWRIGHT_BROWSERS_PATH={percorso} " if percorso else ""
+                ) + f"{Path(sys.executable).parent / 'playwright'} install chromium"
                 logger.error(f"Browser Chromium non installato per questa versione di Playwright. Esegui: {comando}")
-                raise UserError("Il browser del server non e' installato (probabilmente Playwright e' stato "
-                                f"aggiornato). L'amministratore deve eseguire: {comando}")
+                raise UserError(
+                    "Il browser del server non è installato (probabilmente Playwright è stato "
+                    f"aggiornato). L'amministratore deve eseguire: {comando}"
+                )
             raise
         ctx_opts: dict[str, Any] = dict(
-            user_agent=USER_AGENT, viewport={"width": 1366, "height": 900}, locale="it-IT",
-            timezone_id=TZ_NAME, accept_downloads=False,
+            user_agent=USER_AGENT,
+            viewport={"width": 1366, "height": 900},
+            locale="it-IT",
+            timezone_id=TZ_NAME,
+            accept_downloads=False,
             extra_http_headers={"Accept-Language": "it-IT,it;q=0.9,en;q=0.8"},
         )
         if self._stato_file.is_file():
@@ -72,9 +84,7 @@ class BrowserManager:
         except Exception:
             ctx_opts.pop("storage_state", None)
             self._context = await self._browser.new_context(**ctx_opts)
-        await self._context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
-        )
+        await self._context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined});")
         await self._context.route("**/*", self._filtro_richieste)
         logger.info("Sessione browser pronta.")
         return self._context
@@ -107,11 +117,13 @@ class BrowserManager:
             ctx = await self.contesto()
             page = await ctx.new_page()
             if blocca_media:
+
                 async def _blocca(route):
                     if route.request.resource_type in ("media", "font"):
                         await route.abort()
                     else:
                         await route.fallback()
+
                 await page.route("**/*", _blocca)
             try:
                 yield page
@@ -143,12 +155,17 @@ class BrowserManager:
 BROWSER = BrowserManager()
 
 
-async def _accetta_cookie(page: "Page") -> None:
-    """Chiude i banner cookie piu' comuni (Google, Bing, generici)."""
+async def accetta_cookie(page: "Page") -> None:
+    """Chiude i banner cookie più comuni (Google, Bing, generici)."""
     selettori = [
-        "#L2AGLb", "button:has-text('Accetta tutto')", "button:has-text('Accetta tutti')",
-        "button:has-text('Accept all')", "#bnp_btn_accept", "button:has-text('Accetta')",
-        "button:has-text('Accetto')", "button#onetrust-accept-btn-handler",
+        "#L2AGLb",
+        "button:has-text('Accetta tutto')",
+        "button:has-text('Accetta tutti')",
+        "button:has-text('Accept all')",
+        "#bnp_btn_accept",
+        "button:has-text('Accetta')",
+        "button:has-text('Accetto')",
+        "button#onetrust-accept-btn-handler",
     ]
     for frame in [page.main_frame, *page.frames[1:4]]:
         for sel in selettori:
