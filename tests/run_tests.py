@@ -43,6 +43,8 @@ os.environ.update(
         "GITHUB_REPO_AUTORIZZATI": "andrea/progetto,andrea/altro-*",
         "GITHUB_URL": f"file://{S}/remoti",
         "GITHUB_API": "http://127.0.0.1:18080",
+        "ECHO_BRIDGE_URL": "http://127.0.0.1:18124",
+        "ECHO_BRIDGE_TOKEN": "bridge-token",
     }
 )
 os.environ.pop("HTTPS_PROXY", None)
@@ -121,7 +123,7 @@ class FakeYT:
         ]
 
     def stream(self, vid):
-        return {"url": f"http://cdn.example/{vid}.m4a", "titolo": vid, "thumb": ""}
+        return {"url": f"http://cdn.example/{vid}.m4a", "titolo": vid, "thumb": "", "headers": {"User-Agent": "yt"}}
 
 
 t_musica.LETTORE.yt = FakeYT()
@@ -283,6 +285,7 @@ async def esegui():
     servers = [
         await serve(mocks.hass_app, 18123),
         await serve(mocks.web_app, 18080),
+        await serve(mocks.bridge_app, 18124),
         await serve(srv.crea_app(), 18000),
     ]
     # --- auth ---
@@ -1421,6 +1424,48 @@ async def esegui():
             t = testo(await call("timer_annulla", id_o_etichetta="tutti"))
             check("timer annulla tutti", "Sveglia" in t, t)
 
+            # --- Bridge Echo: timer e sveglie nativi, annunci, musica, avvisi dei processi ---
+            sezione("echo_bridge")
+            B = mocks.BRIDGE
+            avviati = [c[1] for c in B["calls"] if c[0] == "timers" and c[1].get("action") == "start"]
+            check(
+                "timer registrati sull'Echo (pasta 2 s, arrosto 90 min)",
+                [(a["name"], a["seconds"]) for a in avviati[:1]] == [("pasta", 2)]
+                and any(a["name"] == "arrosto" and 5390 <= a["seconds"] <= 5400 for a in avviati),
+                avviati,
+            )
+            sveglie = [c[1] for c in B["calls"] if c[0] == "alarms" and c[1].get("action") == "set"]
+            check(
+                "sveglia registrata sull'Echo con ora e data",
+                sveglie and sveglie[0]["time"] == "07:30" and len(sveglie[0]["date"]) == 10,
+                sveglie,
+            )
+            annullati = [
+                c[1]["name"] for c in B["calls"] if c[0] in ("timers", "alarms") and c[1].get("action") == "cancel"
+            ]
+            check(
+                "annullamento propagato all'Echo",
+                len(annullati) == 2 and all(t["name"] == "pasta" for t in B["timers"]),
+                (annullati, B["timers"]),
+            )
+            check("timer suonato sull'Echo: nessun annuncio doppio", not B["announces"], B["announces"])
+            t = testo(await call("timer_imposta", orario="07:00", giorni="feriali", etichetta="Lavoro"))
+            check("sveglia ricorrente sull'Echo", "ricorrente" in t and "feriali" in t and "Echo Cucina" in t, t)
+            t = testo(await call("timer_lista"))
+            check("lista con sveglie ricorrenti dell'Echo", "ricorrenti sull'Echo" in t and "Lavoro" in t, t)
+            t = testo(await call("timer_annulla", id_o_etichetta="lavoro"))
+            check("annulla sveglia ricorrente dell'Echo", "annullate" in t and not B["alarms"], t)
+            B["dnd"] = True
+            t = testo(await call("timer_imposta", durata="1s", etichetta="uova", echo="Echo Bagno"))
+            check("Echo sconosciuto: timer locale con nota", "non registrato sull'Echo" in t, t)
+            await asyncio.sleep(2.5)
+            check(
+                "scadenza annunciata e, con 'non disturbare', lasciata come notifica",
+                any("uova" in a["text"] for a in B["announces"]) and any("uova" in n["text"] for n in B["notifies"]),
+                (B["announces"], B["notifies"]),
+            )
+            B["dnd"] = False
+
             # --- Musica: locale (mpv, uscita null) ---
             sezione("musica")
             t = testo(await call("musica_riproduci", richiesta="bohemian rhapsody", dispositivo="locale"))
@@ -1471,6 +1516,51 @@ async def esegui():
             check("stop HA", "interrotta" in t, t)
             t = testo(await call("musica_riproduci", richiesta="x", dispositivo="bagno"))
             check("dispositivo inesistente", "Nessun altoparlante" in t, t)
+
+            # --- Musica sull'Echo (bridge) ---
+            sezione("echo_bridge")
+            B = mocks.BRIDGE
+            t = testo(await call("musica_riproduci", richiesta="queen", dispositivo="echo"))
+            check("musica sull'Echo dell'ultima richiesta", "Echo Cucina" in t, t)
+            play = [c[1] for c in B["calls"] if c[0] == "music" and c[1].get("action") == "play"]
+            check(
+                "play con URL diretto, header e titolo",
+                play
+                and play[-1]["url"] == "http://cdn.example/AAAAAAAAAAA.m4a"
+                and play[-1]["headers"] == {"User-Agent": "yt"}
+                and "Bohemian" in play[-1]["title"],
+                play[-1:],
+            )
+            await asyncio.sleep(9)  # il bridge finto finisce il brano dopo 5 s
+            play = [c[1] for c in B["calls"] if c[0] == "music" and c[1].get("action") == "play"]
+            check(
+                "Echo: brano successivo all'idle, sullo stesso Echo",
+                play[-1]["url"] == "http://cdn.example/BBBBBBBBBBB.m4a" and play[-1]["echo"] == "Echo Cucina",
+                play[-1:],
+            )
+            t = testo(await call("musica_controlla", azione="volume", valore=20))
+            vol = [c[1] for c in B["calls"] if c[0] == "set_volume"]
+            check("volume dell'Echo via MCP set_volume", "40% → 20%" in t and vol and vol[-1]["level"] == 20, (t, vol))
+            t = testo(await call("musica_controlla", azione="spegni_tra", valore=30))
+            check("spegnimento programmato", "30 min" in t and B["sleep"] == 30, (t, B["sleep"]))
+            t = testo(await call("musica_stato"))
+            check("stato musica Echo", "Echo Cucina" in t and "spegnimento tra" in t, t)
+            await call("musica_controlla", azione="pausa")
+            check("pausa sull'Echo", B["music"]["state"] == "paused", B["music"])
+            await asyncio.sleep(3)
+            check("in pausa niente avanzamento", B["music"]["url"].endswith("BBBBBBBBBBB.m4a"), B["music"])
+            t = testo(await call("musica_controlla", azione="stop"))
+            check("stop sull'Echo", "interrotta" in t and B["music"]["state"] == "idle", t)
+            t = testo(await call("musica_riproduci", richiesta="queen", dispositivo="echo camera", simili=False))
+            check("musica su un Echo per nome", "Echo Camera" in t, t)
+            await call("musica_controlla", azione="stop")
+            t = testo(await call("terminale_esegui", comando="sleep 1", in_background=True, avvisa_al_termine=True))
+            await asyncio.sleep(2.5)
+            check(
+                "fine del processo annunciata sull'Echo",
+                "annuncerò" in t and any("sleep" in a["text"] and "correttamente" in a["text"] for a in B["announces"]),
+                (t, B["announces"][-1:]),
+            )
 
     # --- Domande con modulo interattivo (elicitation MCP, attiva di default sul server principale) ---
     sezione("domande_utente")

@@ -11,6 +11,7 @@ import time
 from pathlib import Path
 from typing import Literal
 
+from nucleo import echo_bridge
 from nucleo.configurazione import DATA_DIR, WORKSPACE_DIR, env_int, logger
 from nucleo.sandbox import comando_da_eseguire, esegui_comando, quote_shell
 from nucleo.server import UserError, tool
@@ -31,6 +32,7 @@ class GestoreProcessi:
     def __init__(self) -> None:
         self.jobs: dict[str, dict] = {}
         self.cartella = DATA_DIR / "jobs"
+        self._avvisi: set[asyncio.Task] = set()
 
     async def avvia(self, comando: str, cwd: Path, base: Path | None = None) -> str:
         attivi = [j for j in self.jobs.values() if j["proc"].returncode is None]
@@ -61,6 +63,22 @@ class GestoreProcessi:
         }
         return jid
 
+    def avvisa_al_termine(self, jid: str, echo: str = "") -> None:
+        """Alla fine del processo lo annuncia sull'Echo (bridge), in background."""
+
+        async def attendi() -> None:
+            j = self.jobs.get(jid)
+            if j is None:
+                return
+            codice = await j["proc"].wait()
+            durata = fmt_durata(time.time() - j["avvio"])
+            esito = "è terminato correttamente" if codice == 0 else f"è terminato con un errore, codice {codice}"
+            await echo_bridge.annuncia(f"Il processo {_nome_vocale(j['comando'])} {esito}, dopo {durata}.", echo)
+
+        task = asyncio.get_running_loop().create_task(attendi())
+        self._avvisi.add(task)
+        task.add_done_callback(self._avvisi.discard)
+
     def output(self, jid: str, ultimi: int = 6000) -> str:
         j = self._job(jid)
         dati = j["log"].read_bytes() if j["log"].exists() else b""
@@ -89,6 +107,8 @@ class GestoreProcessi:
         return len(vecchi)
 
     def termina_tutti(self) -> None:
+        for task in list(self._avvisi):
+            task.cancel()
         for j in self.jobs.values():
             if j["proc"].returncode is None:
                 with contextlib.suppress(Exception):
@@ -98,6 +118,13 @@ class GestoreProcessi:
 PROCESSI = GestoreProcessi()
 
 
+def _nome_vocale(comando: str) -> str:
+    """Il comando in forma breve da leggere a voce (es. 'npm run build')."""
+    primo = comando.strip().split("&&")[-1].split("|")[0].strip()
+    parole = [w for w in primo.split() if not w.startswith("-")][:3]
+    return " ".join(parole) or "in background"
+
+
 @tool(
     "terminale_esegui",
     title="Terminale",
@@ -105,7 +132,8 @@ PROCESSI = GestoreProcessi()
         "Esegue un comando bash nel workspace dedicato (es. git clone, ls, pip install, python script.py, "
         "grep, curl, compilazioni, test). Ogni chiamata parte da 'cartella' (relativa al workspace): "
         "per comandi in sequenza usa '&&'. Restituisce codice di uscita e output (stdout+stderr). "
-        "Per server o comandi molto lunghi usa in_background=true e poi terminale_processi. "
+        "Per server o comandi molto lunghi usa in_background=true e poi terminale_processi; con "
+        "avvisa_al_termine=true (e il bridge Echo) la fine del processo viene annunciata a voce sull'Echo. "
         "Non usare comandi interattivi (usa flag come -y). I comandi girano in una sandbox: vedono solo la "
         "cartella di lavoro e i programmi di sistema, non il resto del server. Non hai permessi di amministratore: "
         "apt e sudo non funzionano. Per Node.js, Python o Go usa ambiente_installa; altri strumenti installali "
@@ -121,6 +149,7 @@ async def terminale_esegui(
     cartella: str = ".",
     timeout_secondi: int = 120,
     in_background: bool = False,
+    avvisa_al_termine: bool = False,
     id_conversazione: IdConversazione = None,
 ) -> str:
     if not comando.strip():
@@ -132,10 +161,17 @@ async def terminale_esegui(
     logger.info(f"[terminale] ({cwd}) $ {comando}")
     if in_background:
         jid = await PROCESSI.avvia(comando, cwd, base)
+        avviso = ""
+        if avvisa_al_termine:
+            if echo_bridge.attivo():
+                PROCESSI.avvisa_al_termine(jid)
+                avviso = "\nAlla fine lo annuncerò sull'Echo."
+            else:
+                avviso = "\n(Avviso vocale non disponibile: bridge Echo non configurato.)"
         await asyncio.sleep(1.5)
         return (
             f"Avviato in background con id '{jid}'.\nOutput iniziale:\n{PROCESSI.output(jid, 2000) or '(nessuno)'}"
-            f"\nUsa terminale_processi(azione='output', id='{jid}') per seguirlo."
+            f"\nUsa terminale_processi(azione='output', id='{jid}') per seguirlo.{avviso}"
         )
     timeout = max(1, min(int(timeout_secondi or 120), TERMINAL_MAX_TIMEOUT))
     codice, out, durata = await esegui_comando(comando, cwd, timeout, base)

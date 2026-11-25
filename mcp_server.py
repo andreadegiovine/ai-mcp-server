@@ -33,7 +33,7 @@ import os
 import sys
 from pathlib import Path
 
-from nucleo import manutenzione, sandbox
+from nucleo import echo_bridge, manutenzione, sandbox
 from nucleo.browser import BROWSER
 from nucleo.configurazione import (
     DATA_DIR,
@@ -185,6 +185,21 @@ def main() -> None:
         print(f"Workspace: {WORKSPACE_DIR}  Dati: {DATA_DIR}")
         print(f"Versione: {VERSIONE}")
         print(manutenzione.spazio_occupato())
+        print(f"Bridge Echo: {echo_bridge.ECHO_BRIDGE_URL or 'non configurato'}")
+        if echo_bridge.attivo():
+            try:
+                echos = asyncio.run(echo_bridge.elenco_echo())
+                print(
+                    "  Echo: "
+                    + (
+                        ", ".join(
+                            f"{e.get('name')} ({'collegato' if e.get('connected') else 'scollegato'})" for e in echos
+                        )
+                        or "nessuno"
+                    )
+                )
+            except echo_bridge.BridgeError as e:
+                print(f"  {e}")
         return
     import uvicorn
 
@@ -195,6 +210,8 @@ def main() -> None:
         )
     if not HASS_TOKEN:
         logger.warning("HASS_TOKEN non impostato: tool Home Assistant disabilitati.")
+    if echo_bridge.attivo():
+        logger.info(f"Bridge Echo: {echo_bridge.ECHO_BRIDGE_URL} (timer, sveglie, musica e avvisi vocali sull'Echo)")
     logger.info(f"Avvio server MCP su {MCP_HOST}:{MCP_PORT} — endpoint OpenWebUI: http://<IP>:{MCP_PORT}/")
     uvicorn.run(crea_app(), host=MCP_HOST, port=MCP_PORT, log_level="warning")
 

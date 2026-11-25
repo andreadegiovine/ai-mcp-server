@@ -1,4 +1,4 @@
-"""Strumenti: timer e sveglie multipli, persistenti, con notifiche tramite Home Assistant."""
+"""Strumenti: timer e sveglie multipli, persistenti, con notifiche tramite Home Assistant e l'Echo (bridge)."""
 
 import asyncio
 import contextlib
@@ -12,6 +12,7 @@ import wave
 from collections import deque
 from datetime import datetime, timedelta
 
+from nucleo import echo_bridge
 from nucleo.configurazione import DATA_DIR, TZ, env_bool, env_str, logger
 from nucleo.server import UserError, tool
 from nucleo.utilita import (
@@ -33,6 +34,20 @@ TIMER_TTS_PLAYER = env_str("TIMER_TTS_PLAYER")
 TIMER_HASS_SCRIPT = env_str("TIMER_HASS_SCRIPT")
 TIMER_PERSISTENT_NOTIFICATION = env_bool("TIMER_PERSISTENT_NOTIFICATION", True)
 TIMER_LOCAL_SOUND = env_bool("TIMER_LOCAL_SOUND", False)
+# con il bridge Echo: timer e sveglie vengono registrati anche sull'Echo (anello e suoneria nativi)
+TIMER_ECHO = env_bool("TIMER_ECHO", True)
+# alla scadenza di un timer non registrato sull'Echo, lo annuncia a voce
+TIMER_ECHO_ANNOUNCE = env_bool("TIMER_ECHO_ANNOUNCE", True)
+
+GIORNI_RIPETIZIONE = {
+    "feriali": "feriali",
+    "lavorativi": "feriali",
+    "weekend": "weekend",
+    "fine settimana": "weekend",
+    "tutti": "tutti",
+    "ogni giorno": "tutti",
+    "tutti i giorni": "tutti",
+}
 
 
 class GestoreTimer:
@@ -137,6 +152,8 @@ class GestoreTimer:
                 logger.warning(f"Notifica timer via {d}.{s} fallita: {e}")
         if TIMER_LOCAL_SOUND:
             await self._suono_locale()
+        if echo_bridge.attivo() and TIMER_ECHO_ANNOUNCE and not t.get("echo_id"):
+            await echo_bridge.annuncia(msg.replace("«", "").replace("»", ""), t.get("echo", ""))
 
     async def _suono_locale(self) -> None:
         if not self._beep.exists():
@@ -200,8 +217,60 @@ class GestoreTimer:
         self._salva()
         return eliminati
 
+    async def registra_echo(self, t: dict, echo: str = "") -> str:
+        """Registra il timer/sveglia anche sull'Echo; ritorna una nota per la risposta ('' se tutto ok)."""
+        if not (echo_bridge.attivo() and TIMER_ECHO):
+            return ""
+        nome = t["etichetta"] or ("Sveglia" if t["tipo"] == "sveglia" else "")
+        echo = echo_bridge.echo_predefinito(echo)
+        try:
+            if t["tipo"] == "sveglia":
+                fine = datetime.fromtimestamp(t["fine"], TZ)
+                r = await echo_bridge.richiesta(
+                    "/api/alarms",
+                    {"action": "set", "time": f"{fine:%H:%M}", "date": f"{fine:%Y-%m-%d}", "name": nome, "echo": echo},
+                )
+                voci = r.get("alarms") or []
+            else:
+                secondi = max(1, int(round(t["fine"] - time.time())))
+                r = await echo_bridge.richiesta(
+                    "/api/timers", {"action": "start", "seconds": secondi, "name": nome, "echo": echo}
+                )
+                voci = r.get("timers") or []
+        except echo_bridge.BridgeError as e:
+            logger.warning(f"[timer] registrazione sull'Echo non riuscita: {e}")
+            return f"(non registrato sull'Echo: {e}; alla scadenza provo ad annunciarlo)"
+        t["echo"] = r.get("echo", echo)
+        t["echo_id"] = voci[0].get("id") if voci else None
+        if self.timer.get(t["id"]) is t:
+            self._salva()
+        return f"Sull'Echo {t['echo']}." if t["echo"] else ""
+
+    async def annulla_echo(self, eliminati: list[dict]) -> None:
+        for t in eliminati:
+            if not t.get("echo_id") or not echo_bridge.attivo():
+                continue
+            percorso = "/api/alarms" if t["tipo"] == "sveglia" else "/api/timers"
+            with contextlib.suppress(echo_bridge.BridgeError):
+                await echo_bridge.richiesta(
+                    percorso, {"action": "cancel", "name": t["echo_id"], "echo": t.get("echo", "")}
+                )
+
 
 TIMER = GestoreTimer()
+
+
+async def _sveglie_ricorrenti_echo() -> list[dict]:
+    """Sveglie ricorrenti sull'Echo (vivono solo sul bridge)."""
+    if not echo_bridge.attivo():
+        return []
+    r = await echo_bridge.richiesta("/api/alarms", {"action": "list"}, metodo="GET")
+    return [a for a in (r.get("alarms") or []) if a.get("days")]
+
+
+def _giorni_bridge(giorni: str) -> str:
+    g = normalizza(giorni)
+    return GIORNI_RIPETIZIONE.get(g, giorni.strip())
 
 
 def _descr_timer(t: dict) -> str:
@@ -223,10 +292,38 @@ def _descr_timer(t: dict) -> str:
         "Imposta un timer (parametro 'durata', es. '10m', '1h30m', '45 secondi', '2 ore e 15 minuti'; un numero "
         "senza unità = minuti) OPPURE una sveglia/promemoria a un orario (parametro 'orario', es. '07:30', "
         "'domani 9:00', '2026-12-24 18:00'). Supporta più timer contemporanei: usa 'etichetta' per distinguerli "
-        "(es. 'pasta'). Alla scadenza viene inviata una notifica tramite Home Assistant."
+        "(es. 'pasta'). Alla scadenza viene inviata una notifica tramite Home Assistant e, se c'è il bridge, "
+        "l'Echo suona con la sua suoneria. 'giorni' rende la sveglia ricorrente sull'Echo ('feriali', 'weekend', "
+        "'tutti' o 'lun,mer,ven'). 'echo': su quale Echo (vuoto = quello che ha ricevuto la richiesta)."
     ),
 )
-async def timer_imposta(durata: str = "", etichetta: str = "", orario: str = "") -> str:
+async def timer_imposta(
+    durata: str = "", etichetta: str = "", orario: str = "", giorni: str = "", echo: str = ""
+) -> str:
+    if giorni.strip():
+        if not echo_bridge.attivo():
+            raise UserError("Le sveglie ricorrenti richiedono il bridge Echo (ECHO_BRIDGE_URL).")
+        ora = _parse_ora(orario) if orario.strip() else None
+        if ora is None:
+            raise UserError("Per una sveglia ricorrente indica solo l'ora (es. orario='07:00', giorni='feriali').")
+        try:
+            r = await echo_bridge.richiesta(
+                "/api/alarms",
+                {
+                    "action": "set",
+                    "time": f"{ora[0]:02d}:{ora[1]:02d}",
+                    "days": _giorni_bridge(giorni),
+                    "name": etichetta.strip() or "Sveglia",
+                    "echo": echo_bridge.echo_predefinito(echo),
+                },
+            )
+        except echo_bridge.BridgeError as e:
+            raise UserError(str(e)) from e
+        a = (r.get("alarms") or [{}])[0]
+        return (
+            f"Sveglia ricorrente «{a.get('name', etichetta)}» alle {a.get('time')} ({_descr_giorni(a.get('days'))}) "
+            f"sull'Echo {r.get('echo', '')}. Prossima: {a.get('next', '?')}."
+        )
     if orario.strip():
         dt, ha_ora = parse_data_ora(orario)
         if not ha_ora:
@@ -245,8 +342,20 @@ async def timer_imposta(durata: str = "", etichetta: str = "", orario: str = "")
         t = TIMER.crea(sec, etichetta, "timer")
     else:
         raise UserError("Indica 'durata' (es. '10m') oppure 'orario' (es. '07:30').")
+    nota = await TIMER.registra_echo(t, echo)
     altri = len(TIMER.timer) - 1
-    return "Impostato: " + _descr_timer(t) + (f"\n(altri timer attivi: {altri})" if altri else "")
+    return (
+        "Impostato: "
+        + _descr_timer(t)
+        + (f" {nota}" if nota else "")
+        + (f"\n(altri timer attivi: {altri})" if altri else "")
+    )
+
+
+def _descr_giorni(giorni) -> str:
+    if isinstance(giorni, list | tuple):
+        return ", ".join(str(g) for g in giorni)
+    return str(giorni or "")
 
 
 @tool(
@@ -272,17 +381,48 @@ async def timer_lista() -> str:
                 f"- {t['tipo']} {nome}scaduto alle {datetime.fromtimestamp(t['fine'], TZ):%H:%M}"
                 + (f" ({t['nota']})" if t.get("nota") else "")
             )
+    try:
+        ricorrenti = await _sveglie_ricorrenti_echo()
+    except echo_bridge.BridgeError as e:
+        ricorrenti = []
+        righe.append(f"\n(Sveglie dell'Echo non leggibili: {e})")
+    if ricorrenti:
+        righe.append("\nSveglie ricorrenti sull'Echo:")
+        righe.extend(
+            f"- [{a.get('id')}] «{a.get('name')}» alle {a.get('time')} ({_descr_giorni(a.get('days'))}), "
+            f"prossima {a.get('next')}"
+            for a in ricorrenti
+        )
     return "\n".join(righe)
 
 
 @tool(
     "timer_annulla",
     title="Annulla timer",
-    description="Annulla un timer o una sveglia tramite id o etichetta (vedi timer_lista), oppure tutti con 'tutti'.",
+    description=(
+        "Annulla un timer o una sveglia tramite id o etichetta (vedi timer_lista), oppure tutti con 'tutti'. "
+        "Annulla anche le sveglie ricorrenti dell'Echo (per id o nome)."
+    ),
     destructive=True,
 )
 async def timer_annulla(id_o_etichetta: str) -> str:
     eliminati = TIMER.annulla(id_o_etichetta)
-    if not eliminati:
-        raise UserError(f"Nessun timer attivo corrisponde a '{id_o_etichetta}'. Usa timer_lista.")
-    return "Annullati:\n" + "\n".join(_descr_timer(t) for t in eliminati)
+    await TIMER.annulla_echo(eliminati)
+    if eliminati:
+        return "Annullati:\n" + "\n".join(_descr_timer(t) for t in eliminati)
+    chiave = normalizza(id_o_etichetta)
+    try:
+        ricorrenti = await _sveglie_ricorrenti_echo()
+    except echo_bridge.BridgeError:
+        ricorrenti = []
+    tolte = []
+    for a in ricorrenti:
+        if chiave in (normalizza(str(a.get("id", ""))), normalizza(a.get("name", ""))):
+            with contextlib.suppress(echo_bridge.BridgeError):
+                await echo_bridge.richiesta("/api/alarms", {"action": "cancel", "name": a["id"]})
+                tolte.append(a)
+    if tolte:
+        return "Sveglie ricorrenti dell'Echo annullate: " + ", ".join(
+            f"«{a.get('name')}» alle {a.get('time')}" for a in tolte
+        )
+    raise UserError(f"Nessun timer attivo corrisponde a '{id_o_etichetta}'. Usa timer_lista.")

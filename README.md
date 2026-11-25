@@ -29,6 +29,7 @@ Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (trami
 - [Ambienti di sviluppo](#ambienti-di-sviluppo)
 - [GitHub](#github)
 - [Timer e sveglie](#timer-e-sveglie)
+- [Echo (bridge vocale)](#echo-bridge-vocale)
 - [Google Calendar](#google-calendar)
 - [Sicurezza](#sicurezza)
 - [Test](#test)
@@ -87,9 +88,9 @@ Il server espone **53 tool**, divisi in gruppi. Un gruppo non configurato viene 
 ### Timer, musica, calendario
 | Tool | Cosa fa |
 |---|---|
-| `timer_imposta` / `timer_lista` / `timer_annulla` | Timer multipli con etichetta e sveglie a orario; restano attivi dopo un riavvio |
-| `musica_riproduci` | Riproduce da YouTube e poi continua con brani simili, in locale (mpv) o su un altoparlante di Home Assistant |
-| `musica_controlla` | Pausa, riprendi, stop, successivo, precedente, volume, attiva o disattiva la radio |
+| `timer_imposta` / `timer_lista` / `timer_annulla` | Timer multipli con etichetta e sveglie a orario; restano attivi dopo un riavvio. Con il bridge suonano anche sull'Echo e le sveglie possono ripetersi (`giorni`) |
+| `musica_riproduci` | Riproduce da YouTube e poi continua con brani simili, sull'Echo (bridge), in locale (mpv) o su un altoparlante di Home Assistant |
+| `musica_controlla` | Pausa, riprendi, stop, successivo, precedente, volume, attiva o disattiva la radio, spegnimento programmato |
 | `musica_aggiungi_in_coda` / `musica_stato` | Aggiunge un brano come prossimo; mostra cosa sta suonando e la coda |
 | `calendario_eventi` / `calendario_crea_evento` / `calendario_modifica_evento` / `calendario_elimina_evento` / `calendario_lista` | Google Calendar completo |
 
@@ -347,11 +348,21 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 | `TIMER_TTS_ENTITY` + `TIMER_TTS_PLAYER` | Annuncio vocale su un altoparlante (`tts.speak`) |
 | `TIMER_HASS_SCRIPT` | Script di HA da eseguire; riceve le variabili `messaggio` ed `etichetta` |
 | `TIMER_LOCAL_SOUND` | Suono sul server stesso (default `false`) |
+| `TIMER_ECHO` | Con il bridge, registra timer e sveglie anche sull'Echo (default `true`) |
+| `TIMER_ECHO_ANNOUNCE` | Con il bridge, annuncia a voce i timer che non suonano già sull'Echo (default `true`) |
+
+### Echo (bridge vocale)
+| Variabile | Default | Descrizione |
+|---|---|---|
+| `ECHO_BRIDGE_URL` | – | Indirizzo del bridge, es. `http://192.168.178.30:8124`. Vuoto = funzioni Echo disattivate |
+| `ECHO_BRIDGE_TOKEN` | – | `API_TOKEN` del bridge, se impostato (segreto: nelle variabili fisse) |
+| `ECHO_BRIDGE_ECHO` | – | Echo predefinito; vuoto = quello che ha ricevuto l'ultima richiesta vocale |
+| `ECHO_NOTIFY_IF_NOT_PLAYED` | `true` | Se un annuncio non viene detto (es. "non disturbare"), lo lascia come notifica (anello giallo) |
 
 ### Musica
 | Variabile | Default | Descrizione |
 |---|---|---|
-| `MUSIC_DEFAULT_DEVICE` | `locale` | `locale` (mpv) oppure un `media_player.*` di HA |
+| `MUSIC_DEFAULT_DEVICE` | `echo` con il bridge, altrimenti `locale` | `echo`, il nome di un Echo, `locale` (mpv) oppure un `media_player.*` di HA |
 | `MUSIC_DEFAULT_VOLUME` | `60` | Volume iniziale di mpv |
 | `MUSIC_MPV_AO` / `MUSIC_MPV_AUDIO_DEVICE` | – | Uscita audio di mpv (es. `pulse`, `alsa`) |
 | `MUSIC_START_TIMEOUT` | `45` | Secondi dopo i quali un brano che non parte viene saltato |
@@ -435,6 +446,8 @@ HASS_URL=http://192.168.178.48:8123
 HASS_TOKEN=il-tuo-long-lived-token
 METEO_DEFAULT_LOCALITA=Priolo Gargallo
 MUSIC_DEFAULT_DEVICE=media_player.soggiorno
+ECHO_BRIDGE_URL=http://192.168.178.30:8124
+ECHO_BRIDGE_TOKEN=api-token-del-bridge
 SMTP_HOST=smtp.gmail.com
 SMTP_USER=tuoindirizzo@gmail.com
 SMTP_PASSWORD=passwordperleapp
@@ -516,6 +529,7 @@ Le istruzioni generali per il modello (usare le fonti, mostrare le immagini con 
 3. **Riproduzione:**
    - **Locale:** un processo `mpv` in background controllato tramite socket IPC. mpv riproduce direttamente l'URL di YouTube usando yt-dlp.
    - **Home Assistant:** il server ricava con yt-dlp l'URL diretto dello stream audio (m4a) e lo invia a `media_player.play_media`, con titolo e copertina. Il dispositivo si può indicare per entity_id o per nome ("cucina").
+   - **Echo (bridge):** il server ricava con yt-dlp l'URL diretto e le intestazioni HTTP e li manda a `POST /api/music` del bridge, che lo suona sull'Echo. Dispositivo `echo` (l'Echo che ha ricevuto la richiesta) oppure il nome dell'Echo ("echo camera"). Vedi [Echo (bridge vocale)](#echo-bridge-vocale).
 4. **Continuità stile Alexa:** un monitor controlla lo stato ogni 2 secondi. Quando un brano finisce passa al successivo; se un brano non parte entro `MUSIC_START_TIMEOUT` lo salta (al massimo 3 volte di fila); se sul dispositivo parte altro, ad esempio un altro cast, interrompe la coda.
 
 > YouTube cambia spesso: tieni aggiornato `yt-dlp` (`pip install -U yt-dlp`) e installa **deno**.
@@ -720,6 +734,28 @@ L'agente può clonare un repository, modificarlo, fare commit e push, e aprire p
 - **Più timer insieme:** fino a 50, distinti da un'etichetta ("pasta", "forno"), e si annullano per id, per etichetta o tutti insieme.
 - **Persistenza:** sono salvati in `data/timers.json`. Al riavvio vengono ripristinati; quelli scaduti da meno di 5 minuti scattano subito.
 - **Alla scadenza:** notifica persistente in HA, push, annuncio TTS, script personalizzato e suono locale, secondo la configurazione. `timer_lista` mostra anche quelli scaduti nelle ultime 6 ore.
+- **Con il bridge Echo:** ogni timer e sveglia viene registrato anche sull'Echo, che mostra il conto alla rovescia sull'anello e suona con la sua suoneria finché non dici "Alexa, stop". Le sveglie ricorrenti (`giorni="feriali"`, `"weekend"`, `"tutti"`, `"lun,mer,ven"`) vivono solo sull'Echo.
+
+---
+
+## Echo (bridge vocale)
+
+Con [ai-echo-dot-bridge](https://github.com/andreadegiovine/ai-echo-dot-bridge) gli Echo diventano la voce del proxy llama.cpp. Basta impostare nelle [variabili fisse](#variabili-fisse) `ECHO_BRIDGE_URL` (e `ECHO_BRIDGE_TOKEN` se nel bridge è impostato `API_TOKEN`) e riavviare: `python mcp_server.py --check` mostra gli Echo trovati.
+
+| Servizio | Cosa usa del bridge | Comportamento |
+|---|---|---|
+| Timer | `POST /api/timers` (`start`, `cancel`) | Il timer parte anche sull'Echo: anello con il tempo che resta e suoneria nativa. Le notifiche di Home Assistant restano |
+| Sveglie | `POST /api/alarms` (`set`, `cancel`, `list`) | Sveglia sull'Echo all'ora e data indicate; con `giorni` diventa ricorrente |
+| Timer non registrati | `POST /api/announce` | Se l'Echo non era raggiungibile quando è stato creato il timer, alla scadenza viene annunciato a voce |
+| Musica | `POST /api/music` (`play`, `pause`, `resume`, `stop`, `status`, `sleep`) | La coda resta del server: quando il bridge passa a `idle` parte il brano successivo, sullo stesso Echo |
+| Volume della musica | strumento MCP `set_volume` del bridge, volume letto da `GET /api/echos` | `musica_controlla(azione="volume")` |
+| Spegnimento programmato | `POST /api/music` con `sleep` | `musica_controlla(azione="spegni_tra", valore=30)`: si ferma tra 30 minuti abbassandosi piano |
+| Processi lunghi | `POST /api/announce` | `terminale_esegui(in_background=true, avvisa_al_termine=true)`: alla fine l'Echo dice com'è andata |
+
+- **Quale Echo:** il campo `echo` vuoto indica al bridge l'Echo che ha ricevuto l'ultima richiesta vocale. Il server ricorda il nome restituito dal bridge, così i comandi successivi (pausa, annullamento di un timer) vanno allo stesso Echo anche se poi parli con un altro.
+- **"Non disturbare":** il bridge scarta gli annunci; il server li lascia allora come notifica (anello giallo), che si ascolta più tardi. Timer e sveglie suonano comunque.
+- **URL di YouTube:** valgono solo per l'IP pubblico che li ha ricavati: server e bridge devono uscire su internet dalla stessa connessione.
+- **Rete:** se usi il [firewall del container](#firewall-del-container), consenti l'uscita verso l'IP del bridge sulla porta 8124.
 
 ---
 
@@ -826,13 +862,14 @@ OUT ACCEPT -dest 192.168.178.1 -p udp -dport 53 -log nolog # DNS del router
 OUT ACCEPT -dest 192.168.178.1 -p tcp -dport 53 -log nolog # DNS del router
 OUT ACCEPT -dest 192.168.178.48 -p tcp -dport 8123 -log nolog # Home Assistant
 OUT ACCEPT -dest 192.168.178.50 -p tcp -dport 2785 -log nolog # gateway OpenWA (se lo usi)
+OUT ACCEPT -dest 192.168.178.30 -p tcp -dport 8124 -log nolog # bridge Echo (se lo usi)
 OUT DROP -dest 10.0.0.0/8 -log nolog # resto della rete locale
 OUT DROP -dest 172.16.0.0/12 -log nolog
 OUT DROP -dest 192.168.0.0/16 -log nolog
 OUT DROP -dest 169.254.0.0/16 -log nolog
 ```
 
-Le regole si applicano in ordine: le eccezioni (DNS, Home Assistant, OpenWA) vengono prima dei blocchi. Se il DNS del container non è il router, sostituisci il suo indirizzo, altrimenti il server non risolve più i nomi (errore `Could not resolve host`).
+Le regole si applicano in ordine: le eccezioni (DNS, Home Assistant, OpenWA, bridge Echo) vengono prima dei blocchi. Se il DNS del container non è il router, sostituisci il suo indirizzo, altrimenti il server non risolve più i nomi (errore `Could not resolve host`).
 
 **3. Verifica** dal terminale dell'agente, o come utente `mcp`:
 ```bash
@@ -843,7 +880,7 @@ runuser -u mcp -- curl -s -m 5 -o /dev/null -w "%{http_code}\n" http://192.168.1
 ```
 Il primo deve rispondere `200` (o un altro codice HTTP), il secondo deve fallire.
 
-**Limite:** il firewall vale per tutto il container e non distingue il server dall'agente. Le porte aperte per il server (Home Assistant, OpenWA) sono raggiungibili anche dal terminale dell'agente, che però non ha i token e riceve solo errori di autenticazione. Il resto della rete locale è bloccato per entrambi.
+**Limite:** il firewall vale per tutto il container e non distingue il server dall'agente. Le porte aperte per il server (Home Assistant, OpenWA, bridge Echo) sono raggiungibili anche dal terminale dell'agente, che però non ha i token e riceve solo errori di autenticazione: per questo nel bridge Echo conviene impostare `API_TOKEN` (e qui `ECHO_BRIDGE_TOKEN`). Il resto della rete locale è bloccato per entrambi.
 
 ---
 
@@ -885,6 +922,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 │   ├── workspace.py           # cartelle di lavoro e percorsi confinati
 │   ├── sandbox.py             # esecuzione dei comandi in bubblewrap
 │   ├── invii.py               # conferme obbligatorie, allegati, registro degli invii
+│   ├── echo_bridge.py         # client del bridge Echo (annunci, timer, sveglie, musica, volume)
 │   └── link_file.py           # link firmati per mostrare i file nella chat
 ├── tools/                     # un modulo per gruppo di strumenti, con le proprie costanti
 │   ├── data_ora.py  calcolatrice.py  meteo.py  valute.py  memoria.py  domande_utente.py
@@ -903,7 +941,7 @@ Non è coperto dai test automatici, perché richiede servizi esterni reali: le p
 ├── tests/
 │   ├── test_e2e.py            # un test pytest per ogni area
 │   ├── run_tests.py           # suite end-to-end
-│   ├── mocks.py               # Home Assistant, sito web, API e gateway finti
+│   ├── mocks.py               # Home Assistant, sito web, API, gateway e bridge Echo finti
 │   └── documenti.py           # documenti di prova (Word, Excel, PowerPoint, PDF, ...)
 └── docs/
     └── MILESTONES.md          # attività svolte e prossimi passi
@@ -929,3 +967,4 @@ Lo stile del codice è controllato con `ruff` (`ruff check . && ruff format .`).
 | L'email non parte: "Credenziali SMTP rifiutate" | Con Gmail serve una password per le app, non la password dell'account |
 | WhatsApp: errore dal gateway | Controlla nella dashboard del gateway che la sessione sia collegata al telefono, che la chiave sia giusta e che `OPENWA_SESSION_ID` sia l'ID e non il nome della sessione |
 | Un timer non notifica | Controlla `TIMER_NOTIFY_SERVICE` e il log del servizio (`journalctl -u mcp-server`) |
+| L'Echo non suona i timer o non riproduce | `python mcp_server.py --check` deve elencare gli Echo; nel log cerca `[echo]` o `registrazione sull'Echo non riuscita`. 401 = `ECHO_BRIDGE_TOKEN` diverso da `API_TOKEN` del bridge |

@@ -6,6 +6,31 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-25 · Integrazione con il bridge vocale Echo (ai-echo-dot-bridge)
+
+### Obiettivo
+Il proxy llama.cpp viene usato a voce tramite [ai-echo-dot-bridge](https://github.com/andreadegiovine/ai-echo-dot-bridge). Analizzate le richieste accettate dal bridge (`REQUESTS.md`) e adattati i servizi del server che devono parlare con l'Echo.
+
+### Attività svolte
+- ✅ **Client del bridge** `nucleo/echo_bridge.py`: richieste REST con token, errori del bridge mostrati in chiaro, elenco e ricerca degli Echo per nome, annunci con ripiego su notifica (anello giallo) quando l'Echo non parla ("non disturbare"), volume tramite lo strumento MCP `set_volume` del bridge
+- ✅ **Timer e sveglie**: registrati anche sull'Echo (`/api/timers`, `/api/alarms`) per anello e suoneria nativi, annullamento propagato, Echo ricordato per i comandi successivi; nuove sveglie ricorrenti (`giorni`) e parametro `echo`; annuncio vocale alla scadenza per i timer che non è stato possibile registrare
+- ✅ **Musica sull'Echo**: nuovo backend `BackendEcho` su `/api/music` con URL diretto, intestazioni HTTP di yt-dlp e titolo; la coda e la radio di brani simili restano del server (passaggio al brano successivo quando il bridge torna `idle`); dispositivo `echo` o nome dell'Echo, predefinito quando il bridge è configurato; volume e nuova azione `spegni_tra` (sleep del bridge, con dissolvenza; timer interno per gli altri dispositivi)
+- ✅ **Processi lunghi**: `terminale_esegui(in_background=true, avvisa_al_termine=true)` annuncia sull'Echo la fine e l'esito
+- ✅ `--check` elenca gli Echo trovati; firewall del container e documentazione aggiornati
+- ✅ **Test**: bridge finto (REST + MCP) e nuova area `echo_bridge` (timer, sveglie, ricorrenti, ripiego, "non disturbare", musica, volume, spegnimento, avviso dei processi): **275/275 controlli superati**, 21 aree pytest
+
+### Decisioni prese
+- Campo `echo` vuoto di default: il bridge usa l'Echo dell'ultima richiesta vocale; il server memorizza il nome restituito
+- Niente webhook in ingresso per gli eventi musicali: il server controlla lo stato ogni 2 secondi (come per gli altri dispositivi), così non serve aprire una rotta senza chiave API
+- Le notifiche di Home Assistant dei timer restano attive accanto all'Echo
+
+### Prossimi passi
+- ⏳ Prova dal vivo con il bridge e un Echo vero (in particolare URL di YouTube e volume via MCP)
+- 💡 Promemoria vocali (`/api/reminders`) e notifiche per gli eventi del calendario
+- 💡 Webhook del bridge (`finished`, `error`) per un passaggio di brano più rapido
+
+---
+
 ## 2026-11-25 · Revisione del codice: sicurezza, affidabilità, voce, qualità
 
 ### Attività svolte

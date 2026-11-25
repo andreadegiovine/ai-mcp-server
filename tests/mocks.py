@@ -431,3 +431,186 @@ def crea_wav(path, secondi=3.0):
                 for i in range(int(8000 * secondi))
             )
         )
+
+
+# --- Bridge Echo finto (ai-echo-dot-bridge): API REST + strumento MCP set_volume ---------
+BRIDGE = {
+    "calls": [],
+    "timers": [],
+    "alarms": [],
+    "announces": [],
+    "notifies": [],
+    "music": {"state": "idle", "url": "", "title": "", "start": 0.0, "headers": {}},
+    "volume": 0.4,
+    "sleep": None,
+    "dnd": False,
+}
+BRIDGE_TOKEN = "bridge-token"
+ECHO_NOME = "Echo Cucina"
+
+
+def _bridge_mcp():
+    from mcp.server.fastmcp import FastMCP
+
+    m = FastMCP("echo-bridge-finto", streamable_http_path="/mcp", stateless_http=True, json_response=True)
+
+    @m.tool()
+    async def set_volume(level: int, echo: str = "") -> dict:
+        BRIDGE["calls"].append(("set_volume", {"level": level, "echo": echo}))
+        BRIDGE["volume"] = level / 100
+        return {"echo": ECHO_NOME, "volume": level}
+
+    async def leggi(req):
+        if req.headers.get("authorization") != f"Bearer {BRIDGE_TOKEN}":
+            return None
+        if req.method == "GET":
+            return dict(req.query_params)
+        return await req.json()
+
+    def risposta(corpo):
+        return JSONResponse({"echo": ECHO_NOME, **corpo})
+
+    def errore(msg, codice=400):
+        return JSONResponse({"error": msg}, status_code=codice)
+
+    @m.custom_route("/api/echos", methods=["GET"])
+    async def echos(req):
+        if await leggi(req) is None:
+            return errore("unauthorized", 401)
+        return JSONResponse(
+            [
+                {
+                    "name": ECHO_NOME,
+                    "node": "echo-cucina",
+                    "address": "192.168.1.50",
+                    "connected": True,
+                    "volume": BRIDGE["volume"],
+                },
+                {
+                    "name": "Echo Camera",
+                    "node": "echo-camera",
+                    "address": "192.168.1.51",
+                    "connected": True,
+                    "volume": 0.3,
+                },
+            ]
+        )
+
+    @m.custom_route("/api/announce", methods=["POST"])
+    async def announce(req):
+        b = await leggi(req)
+        if b is None:
+            return errore("unauthorized", 401)
+        BRIDGE["calls"].append(("announce", b))
+        BRIDGE["announces"].append(b)
+        return risposta({"played": not BRIDGE["dnd"]})
+
+    @m.custom_route("/api/notify", methods=["GET", "POST"])
+    async def notify(req):
+        b = await leggi(req)
+        if b is None:
+            return errore("unauthorized", 401)
+        BRIDGE["calls"].append(("notify", b))
+        if b.get("action", "add") == "add":
+            BRIDGE["notifies"].append(b)
+        return risposta({"notifications": BRIDGE["notifies"]})
+
+    @m.custom_route("/api/timers", methods=["GET", "POST"])
+    async def timers(req):
+        b = await leggi(req)
+        if b is None:
+            return errore("unauthorized", 401)
+        BRIDGE["calls"].append(("timers", b))
+        if b.get("echo") not in (None, "", ECHO_NOME, "Echo Camera"):
+            return errore(f"Echo sconosciuto: {b['echo']}")
+        azione = b.get("action", "start")
+        if azione == "start":
+            if not b.get("seconds"):
+                return errore("manca seconds")
+            t = {
+                "id": f"t{len(BRIDGE['calls'])}",
+                "name": b.get("name", ""),
+                "total_seconds": int(b["seconds"]),
+                "seconds_left": int(b["seconds"]),
+                "active": True,
+            }
+            BRIDGE["timers"].append(t)
+            return risposta({"timers": [t]})
+        if azione == "cancel":
+            tolti = [t for t in BRIDGE["timers"] if b.get("all") or b.get("name") in (t["id"], t["name"])]
+            BRIDGE["timers"] = [t for t in BRIDGE["timers"] if t not in tolti]
+            return risposta({"timers": tolti})
+        return risposta({"timers": BRIDGE["timers"]})
+
+    @m.custom_route("/api/alarms", methods=["GET", "POST"])
+    async def alarms(req):
+        b = await leggi(req)
+        if b is None:
+            return errore("unauthorized", 401)
+        BRIDGE["calls"].append(("alarms", b))
+        azione = b.get("action", "set" if req.method == "POST" else "list")
+        if azione == "set":
+            if not b.get("time"):
+                return errore("manca time")
+            a = {
+                "id": f"a{len(BRIDGE['calls'])}",
+                "name": b.get("name") or "Sveglia",
+                "time": b["time"],
+                "days": b.get("days") or [],
+                "date": b.get("date"),
+                "next": f"{b.get('date') or '2026-11-26'} {b['time']}",
+            }
+            BRIDGE["alarms"].append(a)
+            return risposta({"alarms": [a]})
+        if azione == "cancel":
+            tolte = [a for a in BRIDGE["alarms"] if b.get("all") or b.get("name") in (a["id"], a["name"], a["time"])]
+            BRIDGE["alarms"] = [a for a in BRIDGE["alarms"] if a not in tolte]
+            return risposta({"alarms": tolte})
+        return risposta({"alarms": BRIDGE["alarms"]})
+
+    def stato_musica():
+        mu = BRIDGE["music"]
+        if mu["state"] == "playing" and time.time() - mu["start"] > 5:  # ogni brano dura 5 s
+            mu["state"] = "idle"
+        sl = BRIDGE["sleep"]
+        return {
+            "state": mu["state"],
+            "title": mu["title"],
+            "url": mu["url"],
+            "position": round(time.time() - mu["start"]) if mu["state"] != "idle" else 0,
+            "live": False,
+            "backend": "sendspin",
+            "sleep": {"stops_at": "", "seconds_left": sl * 60, "fade_seconds": 30} if sl else None,
+        }
+
+    @m.custom_route("/api/music", methods=["GET", "POST"])
+    async def music(req):
+        b = await leggi(req)
+        if b is None:
+            return errore("unauthorized", 401)
+        azione = b.get("action", "play" if b.get("url") else "status")
+        if azione != "status":
+            BRIDGE["calls"].append(("music", b))
+        mu = BRIDGE["music"]
+        if azione == "play":
+            mu.update(
+                state="playing",
+                url=b["url"],
+                title=b.get("title", ""),
+                start=time.time(),
+                headers=b.get("headers") or {},
+            )
+        elif azione == "pause":
+            mu["state"] = "paused"
+        elif azione == "resume":
+            mu["state"], mu["start"] = "playing", time.time()
+        elif azione == "stop":
+            mu["state"] = "idle"
+        elif azione == "sleep":
+            BRIDGE["sleep"] = float(b.get("minutes") or 0) or None
+        return risposta(stato_musica())
+
+    return m.streamable_http_app()
+
+
+bridge_app = _bridge_mcp()

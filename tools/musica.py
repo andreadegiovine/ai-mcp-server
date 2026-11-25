@@ -1,4 +1,4 @@
-"""Strumenti: musica da YouTube stile Alexa (locale con mpv o su un media_player di Home Assistant)."""
+"""Strumenti: musica da YouTube stile Alexa (sull'Echo tramite bridge, locale con mpv o su un media_player HA)."""
 
 import asyncio
 import contextlib
@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from nucleo import echo_bridge
 from nucleo.configurazione import DATA_DIR, env_bool, env_int, env_str, logger
 from nucleo.server import FUNZIONALITA, UserError, tool
 from nucleo.utilita import fmt_durata, normalizza
@@ -37,7 +38,8 @@ except ImportError:  # pragma: no cover
     YTMusic = None
 
 
-MUSIC_DEFAULT_DEVICE = env_str("MUSIC_DEFAULT_DEVICE", "locale")
+# predefinito: l'Echo se c'è il bridge, altrimenti la riproduzione locale
+MUSIC_DEFAULT_DEVICE = env_str("MUSIC_DEFAULT_DEVICE", "echo" if echo_bridge.attivo() else "locale")
 MUSIC_MPV_AUDIO_DEVICE = env_str("MUSIC_MPV_AUDIO_DEVICE")
 MUSIC_MPV_AO = env_str("MUSIC_MPV_AO")
 MUSIC_DEFAULT_VOLUME = env_int("MUSIC_DEFAULT_VOLUME", 60)
@@ -163,6 +165,7 @@ class YouTube:
             "url": info["url"],
             "titolo": info.get("title", ""),
             "thumb": info.get("thumbnail", ""),
+            "headers": info.get("http_headers") or {},
             "mime": "audio/mp4" if info.get("ext") == "m4a" else "audio/webm",
         }
 
@@ -361,6 +364,82 @@ class BackendHass:
         pass
 
 
+class BackendEcho:
+    """Riproduzione sull'Echo tramite il bridge (POST /api/music): il bridge decodifica l'URL con ffmpeg."""
+
+    def __init__(self, echo: str, yt: YouTube) -> None:
+        self.echo = echo  # vuoto = l'Echo dell'ultima richiesta vocale (fissato al primo play)
+        self.yt = yt
+        self._url_corrente = ""
+
+    @property
+    def nome(self) -> str:
+        return self.echo or "Echo"
+
+    async def _musica(self, azione: str, **dati) -> dict:
+        try:
+            return await echo_bridge.richiesta("/api/music", {"action": azione, "echo": self.echo, **dati})
+        except echo_bridge.BridgeError as e:
+            raise UserError(str(e)) from e
+
+    async def riproduci(self, brano: Brano) -> None:
+        info = await asyncio.to_thread(self.yt.stream, brano.video_id)
+        self._url_corrente = info["url"]
+        titolo = f"{brano.titolo} di {brano.artista}" if brano.artista else brano.titolo
+        r = await self._musica("play", url=info["url"], headers=info.get("headers") or {}, title=titolo)
+        if not self.echo and r.get("echo"):
+            self.echo = r["echo"]  # i comandi successivi vanno allo stesso Echo
+
+    async def _stato(self) -> dict:
+        return await self._musica("status")
+
+    async def stato(self) -> str:
+        s = await self._stato()
+        st = s.get("state", "")
+        if st == "playing" and s.get("url") and self._url_corrente and s["url"] != self._url_corrente:
+            return "altro"
+        if st == "interrupted":  # in pausa per la voce o un annuncio: riprende da sola
+            return "paused"
+        return {"playing": "playing", "paused": "paused", "idle": "idle"}.get(st, "attesa")
+
+    async def posizione(self) -> str:
+        s = await self._stato()
+        pos = s.get("position")
+        testo = fmt_durata(pos) if pos else ""
+        sl = s.get("sleep") or {}
+        if sl.get("seconds_left"):
+            testo += f"{' · ' if testo else ''}spegnimento tra {fmt_durata(sl['seconds_left'])}"
+        return testo
+
+    async def pausa(self) -> None:
+        await self._musica("pause")
+
+    async def riprendi(self) -> None:
+        await self._musica("resume")
+
+    async def stop(self) -> None:
+        await self._musica("stop")
+
+    async def volume(self) -> int:
+        try:
+            v = await echo_bridge.volume(self.echo)
+        except echo_bridge.BridgeError:
+            v = None
+        return v if v is not None else 50
+
+    async def imposta_volume(self, v: int) -> None:
+        try:
+            await echo_bridge.imposta_volume(v, self.echo)
+        except echo_bridge.BridgeError as e:
+            raise UserError(f"{e}. Usa i tasti del volume dell'Echo.") from e
+
+    async def spegni_tra(self, minuti: float) -> None:
+        await self._musica("sleep", minutes=minuti, fade=30)
+
+    async def chiudi(self) -> None:
+        pass
+
+
 class LettoreMusicale:
     def __init__(self) -> None:
         self.yt = YouTube()
@@ -377,6 +456,7 @@ class LettoreMusicale:
         self._fallimenti = 0
         self._estendendo = False
         self._ids: set[str] = set()
+        self._spegnimento: asyncio.Task | None = None
 
     @property
     def corrente(self) -> Brano | None:
@@ -389,6 +469,8 @@ class LettoreMusicale:
     async def chiudi(self) -> None:
         if self._monitor:
             self._monitor.cancel()
+        if self._spegnimento:
+            self._spegnimento.cancel()
         if self._locale:
             await self._locale.chiudi()
 
@@ -398,7 +480,14 @@ class LettoreMusicale:
             if self._locale is None:
                 self._locale = BackendLocale()
             return self._locale
+        echo = await self._echo_per(d)
+        if echo is not None:
+            if isinstance(self.backend, BackendEcho) and echo and self.backend.echo == echo:
+                return self.backend
+            return BackendEcho(echo, self.yt)
         if HASS is None:
+            if echo_bridge.attivo():
+                raise UserError(f"Nessun Echo corrisponde a '{d}'.")
             raise UserError("Per riprodurre su un altoparlante serve Home Assistant configurato.")
         if RE_ENTITY.match(d):
             if not d.startswith("media_player."):
@@ -407,6 +496,11 @@ class LettoreMusicale:
         else:
             stati, aree = await asyncio.gather(asyncio.to_thread(HASS.stati), asyncio.to_thread(HASS.aree))
             trovati = cerca_entita(stati, aree, d, "media_player")
+            if not trovati and echo_bridge.attivo():
+                with contextlib.suppress(echo_bridge.BridgeError):
+                    nome = await echo_bridge.trova_echo(d)
+                    if nome:
+                        return BackendEcho(nome, self.yt)
             if not trovati:
                 disponibili = [e["entity_id"] for e in stati if e["entity_id"].startswith("media_player.")]
                 raise UserError(
@@ -418,6 +512,49 @@ class LettoreMusicale:
         if isinstance(self.backend, BackendHass) and self.backend.entity_id == d:
             return self.backend
         return BackendHass(d, self.yt)
+
+    @staticmethod
+    async def _echo_per(d: str) -> str | None:
+        """Nome dell'Echo indicato da 'd' ('' = quello della richiesta vocale), None se non è un Echo."""
+        if not echo_bridge.attivo():
+            return None
+        n = normalizza(d)
+        if n in echo_bridge.PAROLE_ECHO:
+            return echo_bridge.echo_predefinito()
+        for parola in echo_bridge.PAROLE_ECHO:  # "echo cucina", "alexa della cucina"
+            if n.startswith(parola + " "):
+                resto = n[len(parola) :].strip().removeprefix("della ").removeprefix("del ").strip()
+                try:
+                    nome = await echo_bridge.trova_echo(resto) or await echo_bridge.trova_echo(n)
+                except echo_bridge.BridgeError as e:
+                    raise UserError(str(e)) from e
+                if nome is None:
+                    raise UserError(f"Nessun Echo corrisponde a '{d}'.")
+                return nome
+        with contextlib.suppress(echo_bridge.BridgeError):
+            return await echo_bridge.trova_echo(d, esatto=True)
+        return None
+
+    async def spegni_tra(self, minuti: float) -> str:
+        if self.backend is None:
+            raise UserError("Nessuna riproduzione avviata.")
+        if self._spegnimento:
+            self._spegnimento.cancel()
+            self._spegnimento = None
+        if isinstance(self.backend, BackendEcho):
+            await self.backend.spegni_tra(minuti)  # il bridge abbassa piano il volume prima di fermarsi
+        elif minuti > 0:
+
+            async def attendi() -> None:
+                await asyncio.sleep(minuti * 60)
+                self.attivo = False
+                with contextlib.suppress(Exception):
+                    await self.backend.stop()
+
+            self._spegnimento = asyncio.get_running_loop().create_task(attendi())
+        if minuti <= 0:
+            return "Spegnimento programmato annullato."
+        return f"La musica si fermerà tra {fmt_durata(minuti * 60)}."
 
     async def _avvia_corrente(self) -> None:
         brano = self.corrente
@@ -562,9 +699,9 @@ LETTORE = LettoreMusicale()
     description=(
         "Riproduce musica da YouTube come un assistente vocale: cerca il brano/artista/genere richiesto "
         "(es. 'Bohemian Rhapsody Queen', 'musica jazz rilassante', 'ultimo singolo di Elodie' o un link YouTube) "
-        "e, finito il brano, continua automaticamente con brani simili. 'dispositivo': 'locale' oppure il nome/"
-        "entity_id di un altoparlante di Home Assistant (es. 'cucina' o 'media_player.soggiorno'); vuoto = "
-        "predefinito. "
+        "e, finito il brano, continua automaticamente con brani simili. 'dispositivo': 'echo' (l'Echo che ha "
+        "ricevuto la richiesta) o il nome di un Echo, 'locale', oppure il nome/entity_id di un altoparlante di "
+        "Home Assistant (es. 'cucina' o 'media_player.soggiorno'); vuoto = predefinito. "
         "simili=false per riprodurre solo il brano richiesto."
     ),
     group="music",
@@ -581,7 +718,8 @@ async def musica_riproduci(richiesta: str, dispositivo: str = "", simili: bool =
     description=(
         "Controlla la riproduzione musicale in corso. azione: 'pausa', 'riprendi', 'stop', 'successivo' (salta), "
         "'precedente', 'volume' (valore 0-100), 'alza_volume' / 'abbassa_volume' (valore = passo, default 10), "
-        "'radio_on' / 'radio_off' (continua o no con brani simili)."
+        "'radio_on' / 'radio_off' (continua o no con brani simili), 'spegni_tra' (valore = minuti, 0 annulla: "
+        "ferma la musica dopo quel tempo, es. 'spegni la musica tra mezz'ora')."
     ),
     group="music",
 )
@@ -597,6 +735,7 @@ async def musica_controlla(
         "abbassa_volume",
         "radio_on",
         "radio_off",
+        "spegni_tra",
     ],
     valore: int | None = None,
 ) -> str:
@@ -624,6 +763,10 @@ async def musica_controlla(
     if azione == "precedente":
         async with L._lock:
             return await L.precedente()
+    if azione == "spegni_tra":
+        if valore is None:
+            raise UserError("Indica tra quanti minuti fermare la musica (valore).")
+        return await L.spegni_tra(max(0, int(valore)))
     if azione in ("radio_on", "radio_off"):
         L.radio = azione == "radio_on"
         if L.radio:
