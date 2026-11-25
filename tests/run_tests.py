@@ -875,7 +875,7 @@ async def esegui():
                 t = testo(
                     await call(
                         "terminale_esegui",
-                        comando=f"ls /opt /mnt; cat {DATA}/segreto.txt; find / -name segreto.txt 2>/dev/null; ls",
+                        comando=f"ls /opt /mnt; cat {DATA}/segreto.txt; timeout 30 find / -name segreto.txt 2>/dev/null; ls",
                     )
                 )
                 check(
