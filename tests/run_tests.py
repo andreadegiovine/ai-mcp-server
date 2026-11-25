@@ -875,13 +875,28 @@ async def esegui():
                 t = testo(
                     await call(
                         "terminale_esegui",
-                        comando=f"ls /opt /mnt; cat {DATA}/segreto.txt; timeout 30 find / -name segreto.txt 2>/dev/null; ls",
+                        comando=f"ls -1 /opt > /tmp/opt.txt 2>&1; echo OPT:$(tr '\\n' ' ' < /tmp/opt.txt); ls /mnt; "
+                        f"cat {DATA}/segreto.txt; timeout 30 find / -name segreto.txt 2>/dev/null; ls",
                     )
                 )
+                # in /opt possono comparire solo le cartelle dell'interprete Python del server (es. su GitHub Actions)
+                ammesse = {q.split("/")[2] for q in (sys.prefix, sys.base_prefix) if q.startswith("/opt/")}
+                riga_opt = next((r for r in t.splitlines() if r.startswith("OPT:")), "OPT:")
+                voci_opt = set(riga_opt[4:].split()) - {
+                    "ls:",
+                    "cannot",
+                    "access",
+                    "'/opt':",
+                    "No",
+                    "such",
+                    "file",
+                    "or",
+                    "directory",
+                }
                 check(
-                    "sandbox: niente /opt, /mnt e file fuori dal workspace",
+                    "sandbox: niente /mnt, /opt solo con il Python del server, file fuori dal workspace invisibili",
                     "PASSWORD-SEGRETA" not in t
-                    and "ls: cannot access '/opt'" in t
+                    and voci_opt <= ammesse
                     and "ls: cannot access '/mnt'" in t
                     and "prog" in t,
                     t,
