@@ -24,7 +24,7 @@ jobs:
       - name: Pacchetti di sistema (musica, sandbox, OCR, LibreOffice)
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends mpv bubblewrap tesseract-ocr tesseract-ocr-ita \
+          sudo apt-get install -y --no-install-recommends bubblewrap tesseract-ocr tesseract-ocr-ita \
             libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui fonts-dejavu-core
           # Ubuntu 24.04 blocca i namespace utente non privilegiati usati dalla sandbox bubblewrap
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

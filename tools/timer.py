@@ -1,20 +1,15 @@
-"""Strumenti: timer e sveglie multipli, persistenti, con notifiche tramite Home Assistant e l'Echo (bridge)."""
+"""Strumenti: timer e sveglie multipli e persistenti, che suonano sull'Echo (bridge vocale)."""
 
 import asyncio
 import contextlib
-import math
 import secrets
-import shutil
-import struct
-import subprocess
 import time
-import wave
 from collections import deque
 from datetime import datetime, timedelta
 
 from nucleo import echo_bridge
-from nucleo.configurazione import DATA_DIR, TZ, env_bool, env_str, logger
-from nucleo.server import UserError, tool
+from nucleo.configurazione import DATA_DIR, TZ, env_bool, logger
+from nucleo.server import FUNZIONALITA, UserError, tool
 from nucleo.utilita import (
     GIORNI,
     JsonStore,
@@ -26,18 +21,9 @@ from nucleo.utilita import (
     parse_data_ora,
     parse_durata,
 )
-from tools.home_assistant import HASS
 
-TIMER_NOTIFY_SERVICE = env_str("TIMER_NOTIFY_SERVICE")
-TIMER_TTS_ENTITY = env_str("TIMER_TTS_ENTITY")
-TIMER_TTS_PLAYER = env_str("TIMER_TTS_PLAYER")
-TIMER_HASS_SCRIPT = env_str("TIMER_HASS_SCRIPT")
-TIMER_PERSISTENT_NOTIFICATION = env_bool("TIMER_PERSISTENT_NOTIFICATION", True)
-TIMER_LOCAL_SOUND = env_bool("TIMER_LOCAL_SOUND", False)
-# con il bridge Echo: timer e sveglie vengono registrati anche sull'Echo (anello e suoneria nativi)
-TIMER_ECHO = env_bool("TIMER_ECHO", True)
-# alla scadenza di un timer non registrato sull'Echo, lo annuncia a voce
-TIMER_ECHO_ANNOUNCE = env_bool("TIMER_ECHO_ANNOUNCE", True)
+# timer e sveglie suonano sull'Echo: senza bridge non avrebbero modo di avvisare
+FUNZIONALITA["timer"] = env_bool("ENABLE_TIMER", True) and echo_bridge.attivo()
 
 GIORNI_RIPETIZIONE = {
     "feriali": "feriali",
@@ -56,7 +42,6 @@ class GestoreTimer:
         self.timer: dict[str, dict] = {}
         self.scaduti: deque = deque(maxlen=20)
         self._task: dict[str, asyncio.Task] = {}
-        self._beep = DATA_DIR / "timer_beep.wav"
 
     def _salva(self) -> None:
         self.store.save({"attivi": list(self.timer.values()), "scaduti": list(self.scaduti)})
@@ -116,70 +101,9 @@ class GestoreTimer:
         await self._notifica(t, msg)
 
     async def _notifica(self, t: dict, msg: str) -> None:
-        compiti = []
-        if HASS is not None:
-            if TIMER_PERSISTENT_NOTIFICATION:
-                compiti.append(
-                    (
-                        "persistent_notification",
-                        "create",
-                        {"title": "Timer", "message": msg, "notification_id": f"mcp_timer_{t['id']}"},
-                    )
-                )
-            if TIMER_NOTIFY_SERVICE and "." in TIMER_NOTIFY_SERVICE:
-                d, s = TIMER_NOTIFY_SERVICE.split(".", 1)
-                compiti.append((d, s, {"title": "Timer", "message": msg}))
-            if TIMER_TTS_ENTITY and TIMER_TTS_PLAYER:
-                compiti.append(
-                    (
-                        "tts",
-                        "speak",
-                        {"entity_id": TIMER_TTS_ENTITY, "media_player_entity_id": TIMER_TTS_PLAYER, "message": msg},
-                    )
-                )
-            if TIMER_HASS_SCRIPT:
-                compiti.append(
-                    (
-                        "script",
-                        "turn_on",
-                        {"entity_id": TIMER_HASS_SCRIPT, "variables": {"messaggio": msg, "etichetta": t["etichetta"]}},
-                    )
-                )
-        for d, s, dati in compiti:
-            try:
-                await asyncio.to_thread(HASS.chiama_servizio, d, s, dati)
-            except Exception as e:
-                logger.warning(f"Notifica timer via {d}.{s} fallita: {e}")
-        if TIMER_LOCAL_SOUND:
-            await self._suono_locale()
-        if echo_bridge.attivo() and TIMER_ECHO_ANNOUNCE and not t.get("echo_id"):
+        """Se il timer suona già sull'Echo non serve altro; altrimenti lo annuncia a voce."""
+        if echo_bridge.attivo() and not t.get("echo_id"):
             await echo_bridge.annuncia(msg.replace("«", "").replace("»", ""), t.get("echo", ""))
-
-    async def _suono_locale(self) -> None:
-        if not self._beep.exists():
-            with wave.open(str(self._beep), "wb") as w:
-                w.setnchannels(1)
-                w.setsampwidth(2)
-                w.setframerate(22050)
-                frames = bytearray()
-                for _rip in range(3):
-                    for i in range(int(22050 * 0.35)):
-                        frames += struct.pack("<h", int(12000 * math.sin(2 * math.pi * 880 * i / 22050)))
-                    frames += b"\x00\x00" * int(22050 * 0.2)
-                w.writeframes(bytes(frames))
-        for cmd in (
-            ["mpv", "--no-video", "--really-quiet"],
-            ["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet"],
-            ["paplay"],
-            ["aplay", "-q"],
-        ):
-            if shutil.which(cmd[0]):
-                with contextlib.suppress(Exception):
-                    p = await asyncio.create_subprocess_exec(
-                        *cmd, str(self._beep), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-                    )
-                    await asyncio.wait_for(p.wait(), 15)
-                return
 
     def crea(self, secondi: int, etichetta: str, tipo: str, fine: float | None = None) -> dict:
         if len(self.timer) >= 50:
@@ -219,7 +143,7 @@ class GestoreTimer:
 
     async def registra_echo(self, t: dict, echo: str = "") -> str:
         """Registra il timer/sveglia anche sull'Echo; ritorna una nota per la risposta ('' se tutto ok)."""
-        if not (echo_bridge.attivo() and TIMER_ECHO):
+        if not echo_bridge.attivo():
             return ""
         nome = t["etichetta"] or ("Sveglia" if t["tipo"] == "sveglia" else "")
         echo = echo_bridge.echo_predefinito(echo)
@@ -292,17 +216,16 @@ def _descr_timer(t: dict) -> str:
         "Imposta un timer (parametro 'durata', es. '10m', '1h30m', '45 secondi', '2 ore e 15 minuti'; un numero "
         "senza unità = minuti) OPPURE una sveglia/promemoria a un orario (parametro 'orario', es. '07:30', "
         "'domani 9:00', '2026-12-24 18:00'). Supporta più timer contemporanei: usa 'etichetta' per distinguerli "
-        "(es. 'pasta'). Alla scadenza viene inviata una notifica tramite Home Assistant e, se c'è il bridge, "
-        "l'Echo suona con la sua suoneria. 'giorni' rende la sveglia ricorrente sull'Echo ('feriali', 'weekend', "
+        "(es. 'pasta'). Alla scadenza l'Echo suona con la sua suoneria. "
+        "'giorni' rende la sveglia ricorrente sull'Echo ('feriali', 'weekend', "
         "'tutti' o 'lun,mer,ven'). 'echo': su quale Echo (vuoto = quello che ha ricevuto la richiesta)."
     ),
+    group="timer",
 )
 async def timer_imposta(
     durata: str = "", etichetta: str = "", orario: str = "", giorni: str = "", echo: str = ""
 ) -> str:
     if giorni.strip():
-        if not echo_bridge.attivo():
-            raise UserError("Le sveglie ricorrenti richiedono il bridge Echo (ECHO_BRIDGE_URL).")
         ora = _parse_ora(orario) if orario.strip() else None
         if ora is None:
             raise UserError("Per una sveglia ricorrente indica solo l'ora (es. orario='07:00', giorni='feriali').")
@@ -361,6 +284,7 @@ def _descr_giorni(giorni) -> str:
 @tool(
     "timer_lista",
     title="Elenco timer",
+    group="timer",
     description=(
         "Mostra i timer e le sveglie attivi con il tempo rimanente, e quelli scaduti di recente. Usalo per "
         "'quanto manca al timer?'."
@@ -399,6 +323,7 @@ async def timer_lista() -> str:
 @tool(
     "timer_annulla",
     title="Annulla timer",
+    group="timer",
     description=(
         "Annulla un timer o una sveglia tramite id o etichetta (vedi timer_lista), oppure tutti con 'tutti'. "
         "Annulla anche le sveglie ricorrenti dell'Echo (per id o nome)."

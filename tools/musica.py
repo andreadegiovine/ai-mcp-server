@@ -1,31 +1,17 @@
-"""Strumenti: musica da YouTube stile Alexa (sull'Echo tramite bridge, locale con mpv o su un media_player HA)."""
+"""Strumenti: musica da YouTube stile Alexa, riprodotta sugli Echo tramite il bridge vocale."""
 
 import asyncio
 import contextlib
-import json
 import re
-import shutil
-import subprocess
-import sys
 import threading
 import time
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Literal
+from typing import Literal
 
 from nucleo import echo_bridge
-from nucleo.configurazione import DATA_DIR, env_bool, env_int, env_str, logger
+from nucleo.configurazione import env_bool, env_int, logger
 from nucleo.server import FUNZIONALITA, UserError, tool
 from nucleo.utilita import fmt_durata, normalizza
-from tools.home_assistant import (
-    HASS,
-    HASS_BLOCKED_ENTITIES,
-    RE_ENTITY,
-    HassError,
-    cerca_entita,
-    client_hass,
-    corrisponde_pattern,
-)
 
 try:
     import yt_dlp
@@ -38,14 +24,10 @@ except ImportError:  # pragma: no cover
     YTMusic = None
 
 
-# predefinito: l'Echo se c'è il bridge, altrimenti la riproduzione locale
-MUSIC_DEFAULT_DEVICE = env_str("MUSIC_DEFAULT_DEVICE", "echo" if echo_bridge.attivo() else "locale")
-MUSIC_MPV_AUDIO_DEVICE = env_str("MUSIC_MPV_AUDIO_DEVICE")
-MUSIC_MPV_AO = env_str("MUSIC_MPV_AO")
-MUSIC_DEFAULT_VOLUME = env_int("MUSIC_DEFAULT_VOLUME", 60)
 MUSIC_START_TIMEOUT = env_int("MUSIC_START_TIMEOUT", 45)
 
-FUNZIONALITA["music"] = env_bool("ENABLE_MUSIC", True) and yt_dlp is not None
+# la musica suona solo sugli Echo: serve il bridge
+FUNZIONALITA["music"] = env_bool("ENABLE_MUSIC", True) and yt_dlp is not None and echo_bridge.attivo()
 
 
 @dataclass
@@ -164,204 +146,8 @@ class YouTube:
         return {
             "url": info["url"],
             "titolo": info.get("title", ""),
-            "thumb": info.get("thumbnail", ""),
             "headers": info.get("http_headers") or {},
-            "mime": "audio/mp4" if info.get("ext") == "m4a" else "audio/webm",
         }
-
-
-class BackendLocale:
-    """Riproduzione locale con mpv (controllato via socket IPC JSON)."""
-
-    nome = "locale (mpv)"
-
-    def __init__(self) -> None:
-        self.proc: asyncio.subprocess.Process | None = None
-        self.sock = DATA_DIR / "mpv.sock"
-        self._rid = 0
-        self._lock = asyncio.Lock()
-
-    @staticmethod
-    def disponibile() -> bool:
-        return shutil.which("mpv") is not None
-
-    async def _assicura(self) -> None:
-        if self.proc is not None and self.proc.returncode is None and self.sock.exists():
-            return
-        if not self.disponibile():
-            raise UserError(
-                "mpv non installato: impossibile riprodurre in locale (apt install mpv) "
-                "oppure indica un media_player di Home Assistant come dispositivo."
-            )
-        self.sock.unlink(missing_ok=True)
-        ytdl = shutil.which("yt-dlp") or str(Path(sys.executable).parent / "yt-dlp")
-        args = [
-            "mpv",
-            "--idle=yes",
-            "--no-video",
-            "--no-terminal",
-            "--really-quiet",
-            "--force-window=no",
-            f"--input-ipc-server={self.sock}",
-            f"--volume={MUSIC_DEFAULT_VOLUME}",
-            "--ytdl-format=bestaudio/best",
-            f"--script-opts=ytdl_hook-ytdl_path={ytdl}",
-        ]
-        if MUSIC_MPV_AUDIO_DEVICE:
-            args.append(f"--audio-device={MUSIC_MPV_AUDIO_DEVICE}")
-        if MUSIC_MPV_AO:
-            args.append(f"--ao={MUSIC_MPV_AO}")
-        self.proc = await asyncio.create_subprocess_exec(
-            *args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL
-        )
-        for _ in range(50):
-            if self.sock.exists():
-                return
-            await asyncio.sleep(0.1)
-        raise RuntimeError("mpv non ha creato il socket IPC")
-
-    async def _cmd(self, *comando) -> Any:
-        async with self._lock:
-            await self._assicura()
-            reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(self.sock)), 3)
-            try:
-                self._rid += 1
-                rid = self._rid
-                writer.write((json.dumps({"command": list(comando), "request_id": rid}) + "\n").encode())
-                await writer.drain()
-                while True:
-                    riga = await asyncio.wait_for(reader.readline(), 5)
-                    if not riga:
-                        raise RuntimeError("connessione mpv chiusa")
-                    msg = json.loads(riga)
-                    if msg.get("request_id") == rid:
-                        if msg.get("error") not in (None, "success"):
-                            raise RuntimeError(msg["error"])
-                        return msg.get("data")
-            finally:
-                writer.close()
-                with contextlib.suppress(Exception):
-                    await writer.wait_closed()
-
-    async def _prop(self, nome: str) -> Any:
-        try:
-            return await self._cmd("get_property", nome)
-        except RuntimeError:
-            return None
-
-    async def riproduci(self, brano: Brano) -> None:
-        await self._cmd("loadfile", brano.url, "replace")
-        await self._cmd("set_property", "pause", False)
-
-    async def stato(self) -> str:
-        if self.proc is None or self.proc.returncode is not None:
-            return "idle"
-        if await self._prop("idle-active"):
-            return "idle"
-        return "paused" if await self._prop("pause") else "playing"
-
-    async def posizione(self) -> str:
-        pos, dur = await self._prop("time-pos"), await self._prop("duration")
-        if pos is None:
-            return ""
-        return f"{fmt_durata(pos)}" + (f" / {fmt_durata(dur)}" if dur else "")
-
-    async def pausa(self) -> None:
-        await self._cmd("set_property", "pause", True)
-
-    async def riprendi(self) -> None:
-        await self._cmd("set_property", "pause", False)
-
-    async def stop(self) -> None:
-        if self.proc is not None and self.proc.returncode is None:
-            await self._cmd("stop")
-
-    async def volume(self) -> int:
-        v = await self._prop("volume")
-        return int(v) if v is not None else MUSIC_DEFAULT_VOLUME
-
-    async def imposta_volume(self, v: int) -> None:
-        await self._cmd("set_property", "volume", max(0, min(100, v)))
-
-    async def chiudi(self) -> None:
-        if self.proc is not None and self.proc.returncode is None:
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self._cmd("quit"), 2)
-            with contextlib.suppress(Exception):
-                await asyncio.wait_for(self.proc.wait(), 3)
-            if self.proc.returncode is None:
-                self.proc.kill()
-        self.sock.unlink(missing_ok=True)
-
-
-class BackendHass:
-    """Riproduzione su un media_player di Home Assistant (Chromecast, Sonos, Music Assistant...)."""
-
-    def __init__(self, entity_id: str, yt: YouTube) -> None:
-        self.entity_id = entity_id
-        self.yt = yt
-        self.nome = entity_id
-        self._url_corrente = ""
-
-    async def _servizio(self, servizio: str, **dati) -> None:
-        await asyncio.to_thread(
-            client_hass().chiama_servizio, "media_player", servizio, {"entity_id": self.entity_id, **dati}
-        )
-
-    async def _stato_ha(self) -> dict:
-        return await asyncio.to_thread(client_hass().stato, self.entity_id)
-
-    async def riproduci(self, brano: Brano) -> None:
-        info = await asyncio.to_thread(self.yt.stream, brano.video_id)
-        self._url_corrente = info["url"]
-        extra = {
-            "title": brano.titolo,
-            "thumb": info.get("thumb", ""),
-            "metadata": {
-                "metadataType": 3,
-                "title": brano.titolo,
-                "artist": brano.artista,
-                "images": [{"url": info.get("thumb", "")}] if info.get("thumb") else [],
-            },
-        }
-        try:
-            await self._servizio("play_media", media_content_id=info["url"], media_content_type="music", extra=extra)
-        except HassError:
-            await self._servizio("play_media", media_content_id=info["url"], media_content_type="music")
-
-    async def stato(self) -> str:
-        s = await self._stato_ha()
-        st = s.get("state", "")
-        cid = (s.get("attributes") or {}).get("media_content_id")
-        if st == "playing" and cid and self._url_corrente and cid != self._url_corrente:
-            return "altro"  # qualcos'altro ha preso il controllo del dispositivo
-        if st in ("idle", "off", "standby", "stopped"):
-            return "idle"
-        return {"playing": "playing", "paused": "paused"}.get(st, "attesa")
-
-    async def posizione(self) -> str:
-        a = (await self._stato_ha()).get("attributes") or {}
-        pos, dur = a.get("media_position"), a.get("media_duration")
-        return f"{fmt_durata(pos)} / {fmt_durata(dur)}" if pos is not None and dur else ""
-
-    async def pausa(self) -> None:
-        await self._servizio("media_pause")
-
-    async def riprendi(self) -> None:
-        await self._servizio("media_play")
-
-    async def stop(self) -> None:
-        await self._servizio("media_stop")
-
-    async def volume(self) -> int:
-        v = ((await self._stato_ha()).get("attributes") or {}).get("volume_level")
-        return int(round(v * 100)) if v is not None else 50
-
-    async def imposta_volume(self, v: int) -> None:
-        await self._servizio("volume_set", volume_level=max(0, min(100, v)) / 100)
-
-    async def chiudi(self) -> None:
-        pass
 
 
 class BackendEcho:
@@ -445,8 +231,7 @@ class LettoreMusicale:
         self.yt = YouTube()
         self.coda: list[Brano] = []
         self.indice = -1
-        self.backend: Any = None
-        self._locale: BackendLocale | None = None
+        self.backend: BackendEcho | None = None
         self.attivo = False
         self.radio = True
         self._lock = asyncio.Lock()
@@ -456,7 +241,6 @@ class LettoreMusicale:
         self._fallimenti = 0
         self._estendendo = False
         self._ids: set[str] = set()
-        self._spegnimento: asyncio.Task | None = None
 
     @property
     def corrente(self) -> Brano | None:
@@ -469,89 +253,34 @@ class LettoreMusicale:
     async def chiudi(self) -> None:
         if self._monitor:
             self._monitor.cancel()
-        if self._spegnimento:
-            self._spegnimento.cancel()
-        if self._locale:
-            await self._locale.chiudi()
 
-    async def risolvi_dispositivo(self, dispositivo: str) -> Any:
-        d = (dispositivo or MUSIC_DEFAULT_DEVICE or "locale").strip()
-        if normalizza(d) in ("locale", "local", "server", "mpv", "questo dispositivo"):
-            if self._locale is None:
-                self._locale = BackendLocale()
-            return self._locale
-        echo = await self._echo_per(d)
-        if echo is not None:
-            if isinstance(self.backend, BackendEcho) and echo and self.backend.echo == echo:
-                return self.backend
-            return BackendEcho(echo, self.yt)
-        if HASS is None:
-            if echo_bridge.attivo():
-                raise UserError(f"Nessun Echo corrisponde a '{d}'.")
-            raise UserError("Per riprodurre su un altoparlante serve Home Assistant configurato.")
-        if RE_ENTITY.match(d):
-            if not d.startswith("media_player."):
-                raise UserError("Il dispositivo deve essere un media_player.")
-            await asyncio.to_thread(HASS.stato, d)
+    async def risolvi_echo(self, echo: str) -> BackendEcho:
+        """Backend per l'Echo indicato ('' o 'echo' = quello che ha ricevuto l'ultima richiesta vocale)."""
+        e = (echo or "").strip()
+        n = normalizza(e)
+        if not n or n in echo_bridge.PAROLE_ECHO:
+            nome = echo_bridge.echo_predefinito()
         else:
-            stati, aree = await asyncio.gather(asyncio.to_thread(HASS.stati), asyncio.to_thread(HASS.aree))
-            trovati = cerca_entita(stati, aree, d, "media_player")
-            if not trovati and echo_bridge.attivo():
-                with contextlib.suppress(echo_bridge.BridgeError):
-                    nome = await echo_bridge.trova_echo(d)
-                    if nome:
-                        return BackendEcho(nome, self.yt)
-            if not trovati:
-                disponibili = [e["entity_id"] for e in stati if e["entity_id"].startswith("media_player.")]
-                raise UserError(
-                    f"Nessun altoparlante corrisponde a '{d}'. Disponibili: {', '.join(disponibili) or 'nessuno'}"
-                )
-            d = trovati[0][1]["entity_id"]
-        if corrisponde_pattern(d, HASS_BLOCKED_ENTITIES):
-            raise UserError(f"Il dispositivo {d} è bloccato dalla configurazione.")
-        if isinstance(self.backend, BackendHass) and self.backend.entity_id == d:
-            return self.backend
-        return BackendHass(d, self.yt)
-
-    @staticmethod
-    async def _echo_per(d: str) -> str | None:
-        """Nome dell'Echo indicato da 'd' ('' = quello della richiesta vocale), None se non è un Echo."""
-        if not echo_bridge.attivo():
-            return None
-        n = normalizza(d)
-        if n in echo_bridge.PAROLE_ECHO:
-            return echo_bridge.echo_predefinito()
-        for parola in echo_bridge.PAROLE_ECHO:  # "echo cucina", "alexa della cucina"
-            if n.startswith(parola + " "):
-                resto = n[len(parola) :].strip().removeprefix("della ").removeprefix("del ").strip()
-                try:
-                    nome = await echo_bridge.trova_echo(resto) or await echo_bridge.trova_echo(n)
-                except echo_bridge.BridgeError as e:
-                    raise UserError(str(e)) from e
+            ricerca = n
+            for parola in echo_bridge.PAROLE_ECHO:  # "alexa della cucina" -> "cucina"
+                if ricerca.startswith(parola + " "):
+                    ricerca = ricerca[len(parola) :].strip().removeprefix("della ").removeprefix("del ").strip()
+                    break
+            try:
+                nome = await echo_bridge.trova_echo(n) or await echo_bridge.trova_echo(ricerca)
                 if nome is None:
-                    raise UserError(f"Nessun Echo corrisponde a '{d}'.")
-                return nome
-        with contextlib.suppress(echo_bridge.BridgeError):
-            return await echo_bridge.trova_echo(d, esatto=True)
-        return None
+                    disponibili = ", ".join(x.get("name", "") for x in await echo_bridge.elenco_echo())
+                    raise UserError(f"Nessun Echo corrisponde a '{e}'. Disponibili: {disponibili or 'nessuno'}")
+            except echo_bridge.BridgeError as err:
+                raise UserError(str(err)) from err
+        if isinstance(self.backend, BackendEcho) and nome and self.backend.echo == nome:
+            return self.backend
+        return BackendEcho(nome, self.yt)
 
     async def spegni_tra(self, minuti: float) -> str:
         if self.backend is None:
             raise UserError("Nessuna riproduzione avviata.")
-        if self._spegnimento:
-            self._spegnimento.cancel()
-            self._spegnimento = None
-        if isinstance(self.backend, BackendEcho):
-            await self.backend.spegni_tra(minuti)  # il bridge abbassa piano il volume prima di fermarsi
-        elif minuti > 0:
-
-            async def attendi() -> None:
-                await asyncio.sleep(minuti * 60)
-                self.attivo = False
-                with contextlib.suppress(Exception):
-                    await self.backend.stop()
-
-            self._spegnimento = asyncio.get_running_loop().create_task(attendi())
+        await self.backend.spegni_tra(minuti)  # il bridge abbassa piano il volume prima di fermarsi
         if minuti <= 0:
             return "Spegnimento programmato annullato."
         return f"La musica si fermerà tra {fmt_durata(minuti * 60)}."
@@ -588,11 +317,11 @@ class LettoreMusicale:
         finally:
             self._estendendo = False
 
-    async def riproduci(self, richiesta: str, dispositivo: str, simili: bool) -> str:
+    async def riproduci(self, richiesta: str, echo: str, simili: bool) -> str:
         brani = await asyncio.to_thread(self.yt.cerca, richiesta, 5)
         if not brani:
             raise UserError(f"Nessun brano trovato su YouTube per '{richiesta}'.")
-        nuovo_backend = await self.risolvi_dispositivo(dispositivo)
+        nuovo_backend = await self.risolvi_echo(echo)
         async with self._lock:
             if self.backend is not None and self.backend is not nuovo_backend and self.attivo:
                 with contextlib.suppress(Exception):
@@ -665,7 +394,7 @@ class LettoreMusicale:
                     self._fallimenti = 0
                     continue
                 if st == "altro":
-                    logger.info("[musica] il dispositivo sta riproducendo altro: interrompo la coda")
+                    logger.info("[musica] l'Echo sta riproducendo altro: interrompo la coda")
                     self.attivo = False
                     continue
                 if st != "idle":
@@ -699,17 +428,16 @@ LETTORE = LettoreMusicale()
     description=(
         "Riproduce musica da YouTube come un assistente vocale: cerca il brano/artista/genere richiesto "
         "(es. 'Bohemian Rhapsody Queen', 'musica jazz rilassante', 'ultimo singolo di Elodie' o un link YouTube) "
-        "e, finito il brano, continua automaticamente con brani simili. 'dispositivo': 'echo' (l'Echo che ha "
-        "ricevuto la richiesta) o il nome di un Echo, 'locale', oppure il nome/entity_id di un altoparlante di "
-        "Home Assistant (es. 'cucina' o 'media_player.soggiorno'); vuoto = predefinito. "
+        "e la suona sull'Echo; finito il brano, continua automaticamente con brani simili. 'echo': su quale Echo "
+        "(nome, es. 'cucina'); vuoto = quello che ha ricevuto la richiesta. "
         "simili=false per riprodurre solo il brano richiesto."
     ),
     group="music",
 )
-async def musica_riproduci(richiesta: str, dispositivo: str = "", simili: bool = True) -> str:
+async def musica_riproduci(richiesta: str, echo: str = "", simili: bool = True) -> str:
     if not richiesta.strip():
         raise UserError("Indica cosa riprodurre.")
-    return await LETTORE.riproduci(richiesta.strip(), dispositivo, simili)
+    return await LETTORE.riproduci(richiesta.strip(), echo, simili)
 
 
 @tool(
@@ -802,7 +530,7 @@ async def musica_aggiungi_in_coda(richiesta: str) -> str:
     "musica_stato",
     title="Cosa sta suonando",
     description=(
-        "Mostra il brano in riproduzione, dispositivo, stato, volume e i prossimi brani in coda. Usalo per "
+        "Mostra il brano in riproduzione, Echo, stato, volume e i prossimi brani in coda. Usalo per "
         "'che canzone è questa?'."
     ),
     group="music",
@@ -821,12 +549,12 @@ async def musica_stato() -> str:
         "paused": "in pausa",
         "idle": "fermo",
         "attesa": "in caricamento",
-        "altro": "il dispositivo riproduce altro",
+        "altro": "l'Echo riproduce altro",
     }
     righe = [
         f"{L.corrente.descr()}",
         f"Stato: {nomi.get(st, st)}{(' · ' + pos) if pos else ''} · volume {vol}%",
-        f"Dispositivo: {L.backend.nome} · radio brani simili: {'sì' if L.radio else 'no'}",
+        f"Echo: {L.backend.nome} · radio brani simili: {'sì' if L.radio else 'no'}",
     ]
     prossimi = L.coda[L.indice + 1 : L.indice + 11]
     if prossimi:

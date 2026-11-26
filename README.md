@@ -2,9 +2,9 @@
 
 [![Test](https://github.com/andreadegiovine/ai-mcp-server/actions/workflows/test.yml/badge.svg)](https://github.com/andreadegiovine/ai-mcp-server/actions/workflows/test.yml)
 
-Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale (tramite **OpenWebUI**) una serie di strumenti reali: ricerca e lettura del web con immagini, un terminale con workspace dedicato, il controllo sicuro di **Home Assistant**, musica da YouTube in stile Alexa, timer e sveglie multipli, e **Google Calendar**.
+Server **MCP (Model Context Protocol)** in Python che dà a un LLM locale su llama.cpp una serie di strumenti reali: ricerca e lettura del web con immagini, un terminale con workspace dedicato, lettura e controllo sicuro di **Home Assistant**, musica da YouTube in stile Alexa, timer e sveglie multipli, e **Google Calendar**. L'agente si usa a voce tramite gli Echo e il [bridge vocale](#echo-bridge-vocale), oppure in chat con **OpenWebUI**. Home Assistant è solo uno dei sistemi su cui l'agente agisce con i suoi strumenti: voce, timer e musica passano dal bridge, non da HA.
 
-È un unico file (`mcp_server.py`), pensato per girare in un container LXC su Proxmox dentro un virtualenv.
+Il punto di ingresso è `mcp_server.py` (moduli in `nucleo/` e `tools/`), pensato per girare in un container LXC su Proxmox dentro un virtualenv.
 
 > Lo stato di avanzamento e le attività svolte sono in [`docs/MILESTONES.md`](docs/MILESTONES.md).
 
@@ -88,8 +88,8 @@ Il server espone **53 tool**, divisi in gruppi. Un gruppo non configurato viene 
 ### Timer, musica, calendario
 | Tool | Cosa fa |
 |---|---|
-| `timer_imposta` / `timer_lista` / `timer_annulla` | Timer multipli con etichetta e sveglie a orario; restano attivi dopo un riavvio. Con il bridge suonano anche sull'Echo e le sveglie possono ripetersi (`giorni`) |
-| `musica_riproduci` | Riproduce da YouTube e poi continua con brani simili, sull'Echo (bridge), in locale (mpv) o su un altoparlante di Home Assistant |
+| `timer_imposta` / `timer_lista` / `timer_annulla` | Timer multipli con etichetta e sveglie a orario, anche ricorrenti (`giorni`), che suonano sull'Echo; restano attivi dopo un riavvio. Richiedono il bridge |
+| `musica_riproduci` | Riproduce da YouTube sull'Echo e poi continua con brani simili. Richiede il bridge |
 | `musica_controlla` | Pausa, riprendi, stop, successivo, precedente, volume, attiva o disattiva la radio, spegnimento programmato |
 | `musica_aggiungi_in_coda` / `musica_stato` | Aggiunge un brano come prossimo; mostra cosa sta suonando e la coda |
 | `calendario_eventi` / `calendario_crea_evento` / `calendario_modifica_evento` / `calendario_elimina_evento` / `calendario_lista` | Google Calendar completo |
@@ -118,7 +118,7 @@ Il server espone **53 tool**, divisi in gruppi. Un gruppo non configurato viene 
 - **Concorrenza:** tutti i tool sono asincroni. Le chiamate bloccanti (HTTP verso le API, yt-dlp, Google API) girano in thread separati, quindi una richiesta lenta non ferma le altre.
 - **Browser:** una sessione Chromium persistente gestita da Playwright. I cookie, ad esempio il consenso di Google, vengono salvati in `data/browser_state.json`. Ogni richiesta apre la propria pagina, fino a `BROWSER_MAX_PAGES` pagine in parallelo, e il browser si riavvia da solo se va in crash.
 - **Gestione degli errori:** ogni tool restituisce un messaggio leggibile dal modello, ad esempio "⚠️ Entità inesistente, usa hass_cerca_entita", invece di un traceback.
-- **Ciclo di vita:** all'avvio vengono ripristinati i timer e parte il monitor della musica. Allo spegnimento si chiudono browser, mpv e processi in background.
+- **Ciclo di vita:** all'avvio vengono ripristinati i timer e parte il monitor della musica. Allo spegnimento si chiudono browser e processi in background.
 - **Endpoint `/health`:** risponde senza autenticazione con lo stato, la versione (commit) e il numero di tool.
 - **Manutenzione automatica:** un minuto dopo l'avvio, e poi ogni 24 ore, il server cancella i file vecchi (log dei processi, screenshot, cache dell'agente) e scrive nel log quanto spazio occupa ogni cartella dei dati. I registri `invii.log` e `hass_audit.log` vengono ruotati oltre 5 MB. Lo spazio occupato si vede anche con `--check`.
 
@@ -142,7 +142,7 @@ data/
 Esempio con il server in `/opt/mcp-server`, dentro un container LXC Debian o Ubuntu **unprivileged**.
 
 ```bash
-apt update && apt install -y python3-venv git mpv bubblewrap
+apt update && apt install -y python3-venv git bubblewrap
 ```
 
 Facoltativi, per leggere PDF scansionati e immagini (OCR) e i vecchi formati Office `.doc`/`.ppt` (vedi [Leggere documenti](#leggere-documenti)):
@@ -169,7 +169,7 @@ Il browser per Playwright va installato in una cartella condivisa, così può us
 PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install --with-deps chromium
 ```
 
-`mpv` serve solo per riprodurre musica sul server stesso. Per YouTube, yt-dlp richiede anche un runtime JavaScript (deno), da installare per l'utente che esegue il servizio. Dopo aver creato l'utente `mcp` (vedi [Sicurezza](#sicurezza)):
+Per YouTube, yt-dlp richiede un runtime JavaScript (deno), da installare per l'utente che esegue il servizio. Dopo aver creato l'utente `mcp` (vedi [Sicurezza](#sicurezza)):
 
 ```bash
 su - mcp -c "curl -fsSL https://deno.land/install.sh | sh"
@@ -340,21 +340,10 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 | `HASS_VERIFY_SSL` | `true` | Verifica del certificato |
 | `HASS_CACHE_TTL` | `10` | Secondi di cache dell'elenco stati |
 
-### Timer
-| Variabile | Descrizione |
-|---|---|
-| `TIMER_PERSISTENT_NOTIFICATION` | Notifica nell'interfaccia di HA (default `true`) |
-| `TIMER_NOTIFY_SERVICE` | Es. `notify.mobile_app_telefono` (push sul telefono) |
-| `TIMER_TTS_ENTITY` + `TIMER_TTS_PLAYER` | Annuncio vocale su un altoparlante (`tts.speak`) |
-| `TIMER_HASS_SCRIPT` | Script di HA da eseguire; riceve le variabili `messaggio` ed `etichetta` |
-| `TIMER_LOCAL_SOUND` | Suono sul server stesso (default `false`) |
-| `TIMER_ECHO` | Con il bridge, registra timer e sveglie anche sull'Echo (default `true`) |
-| `TIMER_ECHO_ANNOUNCE` | Con il bridge, annuncia a voce i timer che non suonano già sull'Echo (default `true`) |
-
 ### Echo (bridge vocale)
 | Variabile | Default | Descrizione |
 |---|---|---|
-| `ECHO_BRIDGE_URL` | – | Indirizzo del bridge, es. `http://192.168.178.30:8124`. Vuoto = funzioni Echo disattivate |
+| `ECHO_BRIDGE_URL` | – | Indirizzo del bridge, es. `http://192.168.178.30:8124`. Vuoto = timer, sveglie e musica disattivati |
 | `ECHO_BRIDGE_TOKEN` | – | `API_TOKEN` del bridge, se impostato (segreto: nelle variabili fisse) |
 | `ECHO_BRIDGE_ECHO` | – | Echo predefinito; vuoto = quello che ha ricevuto l'ultima richiesta vocale |
 | `ECHO_NOTIFY_IF_NOT_PLAYED` | `true` | Se un annuncio non viene detto (es. "non disturbare"), lo lascia come notifica (anello giallo) |
@@ -362,9 +351,6 @@ Il server legge il `.env`, ma non sovrascrive le variabili già impostate dal se
 ### Musica
 | Variabile | Default | Descrizione |
 |---|---|---|
-| `MUSIC_DEFAULT_DEVICE` | `echo` con il bridge, altrimenti `locale` | `echo`, il nome di un Echo, `locale` (mpv) oppure un `media_player.*` di HA |
-| `MUSIC_DEFAULT_VOLUME` | `60` | Volume iniziale di mpv |
-| `MUSIC_MPV_AO` / `MUSIC_MPV_AUDIO_DEVICE` | – | Uscita audio di mpv (es. `pulse`, `alsa`) |
 | `MUSIC_START_TIMEOUT` | `45` | Secondi dopo i quali un brano che non parte viene saltato |
 
 ### Terminale
@@ -445,7 +431,6 @@ MCP_API_KEY=una-chiave-lunga-e-casuale
 HASS_URL=http://192.168.178.48:8123
 HASS_TOKEN=il-tuo-long-lived-token
 METEO_DEFAULT_LOCALITA=Priolo Gargallo
-MUSIC_DEFAULT_DEVICE=media_player.soggiorno
 ECHO_BRIDGE_URL=http://192.168.178.30:8124
 ECHO_BRIDGE_TOKEN=api-token-del-bridge
 SMTP_HOST=smtp.gmail.com
@@ -481,7 +466,7 @@ Da qui in poi aggiorna con il comando completo della sezione [Aggiornamento](#ag
 Controlla che il processo abbia ricevuto le variabili giuste. Il comando mostra solo variabili non segrete:
 
 ```bash
-tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value mcp-server)/environ | grep -E "^(HASS_URL|SMTP_HOST|SMTP_USER|SMTP_NOME|OPENWA_URL|METEO|MUSIC_DEFAULT_DEVICE)="
+tr '\0' '\n' < /proc/$(systemctl show -p MainPID --value mcp-server)/environ | grep -E "^(HASS_URL|SMTP_HOST|SMTP_USER|SMTP_NOME|OPENWA_URL|METEO|ECHO_BRIDGE_URL)="
 ```
 
 In alternativa, la riga `Tool attivi (...)` nel log mostra se gli strumenti di Home Assistant, email e WhatsApp sono stati attivati.
@@ -526,11 +511,8 @@ Le istruzioni generali per il modello (usare le fonti, mostrare le immagini con 
 
 1. **Ricerca:** YouTube Music (`ytmusicapi`, filtro brani), con ripiego su una ricerca YouTube tramite `yt-dlp`. Accetta anche link YouTube.
 2. **Brani simili:** la "radio" di YouTube Music per il brano, con ripiego sul mix `RD<videoId>` di YouTube. La coda si allunga da sola quando restano pochi brani, senza ripetizioni.
-3. **Riproduzione:**
-   - **Locale:** un processo `mpv` in background controllato tramite socket IPC. mpv riproduce direttamente l'URL di YouTube usando yt-dlp.
-   - **Home Assistant:** il server ricava con yt-dlp l'URL diretto dello stream audio (m4a) e lo invia a `media_player.play_media`, con titolo e copertina. Il dispositivo si può indicare per entity_id o per nome ("cucina").
-   - **Echo (bridge):** il server ricava con yt-dlp l'URL diretto e le intestazioni HTTP e li manda a `POST /api/music` del bridge, che lo suona sull'Echo. Dispositivo `echo` (l'Echo che ha ricevuto la richiesta) oppure il nome dell'Echo ("echo camera"). Vedi [Echo (bridge vocale)](#echo-bridge-vocale).
-4. **Continuità stile Alexa:** un monitor controlla lo stato ogni 2 secondi. Quando un brano finisce passa al successivo; se un brano non parte entro `MUSIC_START_TIMEOUT` lo salta (al massimo 3 volte di fila); se sul dispositivo parte altro, ad esempio un altro cast, interrompe la coda.
+3. **Riproduzione sull'Echo:** il server ricava con yt-dlp l'URL diretto dell'audio e le intestazioni HTTP e li manda a `POST /api/music` del bridge, che lo suona sull'Echo. Parametro `echo`: vuoto per l'Echo che ha ricevuto la richiesta, oppure il nome dell'Echo ("cucina"). Vedi [Echo (bridge vocale)](#echo-bridge-vocale).
+4. **Continuità stile Alexa:** un monitor controlla lo stato ogni 2 secondi. Quando un brano finisce passa al successivo; se un brano non parte entro `MUSIC_START_TIMEOUT` lo salta (al massimo 3 volte di fila); se sull'Echo parte altro, interrompe la coda.
 
 > YouTube cambia spesso: tieni aggiornato `yt-dlp` (`pip install -U yt-dlp`) e installa **deno**.
 
@@ -733,18 +715,19 @@ L'agente può clonare un repository, modificarlo, fare commit e push, e aprire p
 - **Sveglie:** `timer_imposta(orario="07:30")` (se l'ora è già passata, il giorno dopo), `"domani 9:00"`, `"venerdì 20:30"`, `"2026-12-24 18:00"`.
 - **Più timer insieme:** fino a 50, distinti da un'etichetta ("pasta", "forno"), e si annullano per id, per etichetta o tutti insieme.
 - **Persistenza:** sono salvati in `data/timers.json`. Al riavvio vengono ripristinati; quelli scaduti da meno di 5 minuti scattano subito.
-- **Alla scadenza:** notifica persistente in HA, push, annuncio TTS, script personalizzato e suono locale, secondo la configurazione. `timer_lista` mostra anche quelli scaduti nelle ultime 6 ore.
-- **Con il bridge Echo:** ogni timer e sveglia viene registrato anche sull'Echo, che mostra il conto alla rovescia sull'anello e suona con la sua suoneria finché non dici "Alexa, stop". Le sveglie ricorrenti (`giorni="feriali"`, `"weekend"`, `"tutti"`, `"lun,mer,ven"`) vivono solo sull'Echo.
+- **Sull'Echo:** ogni timer e sveglia viene registrato sull'Echo, che mostra il conto alla rovescia sull'anello e suona con la sua suoneria finché non dici "Alexa, stop". Se l'Echo non era raggiungibile alla creazione, alla scadenza il timer viene annunciato a voce. `timer_lista` mostra anche quelli scaduti nelle ultime 6 ore.
+- **Sveglie ricorrenti:** `giorni="feriali"`, `"weekend"`, `"tutti"` o `"lun,mer,ven"`; vivono solo sull'Echo.
+- **Senza bridge** (`ECHO_BRIDGE_URL` vuoto) gli strumenti dei timer non vengono registrati, perché non avrebbero modo di avvisare.
 
 ---
 
 ## Echo (bridge vocale)
 
-Con [ai-echo-dot-bridge](https://github.com/andreadegiovine/ai-echo-dot-bridge) gli Echo diventano la voce del proxy llama.cpp. Basta impostare nelle [variabili fisse](#variabili-fisse) `ECHO_BRIDGE_URL` (e `ECHO_BRIDGE_TOKEN` se nel bridge è impostato `API_TOKEN`) e riavviare: `python mcp_server.py --check` mostra gli Echo trovati.
+Con [ai-echo-dot-bridge](https://github.com/andreadegiovine/ai-echo-dot-bridge) gli Echo diventano la voce dell'agente su llama.cpp, e sono anche l'unico canale per timer, sveglie e musica. Basta impostare nelle [variabili fisse](#variabili-fisse) `ECHO_BRIDGE_URL` (e `ECHO_BRIDGE_TOKEN` se nel bridge è impostato `API_TOKEN`) e riavviare: `python mcp_server.py --check` mostra gli Echo trovati.
 
 | Servizio | Cosa usa del bridge | Comportamento |
 |---|---|---|
-| Timer | `POST /api/timers` (`start`, `cancel`) | Il timer parte anche sull'Echo: anello con il tempo che resta e suoneria nativa. Le notifiche di Home Assistant restano |
+| Timer | `POST /api/timers` (`start`, `cancel`) | Il timer parte sull'Echo: anello con il tempo che resta e suoneria nativa |
 | Sveglie | `POST /api/alarms` (`set`, `cancel`, `list`) | Sveglia sull'Echo all'ora e data indicate; con `giorni` diventa ricorrente |
 | Timer non registrati | `POST /api/announce` | Se l'Echo non era raggiungibile quando è stato creato il timer, alla scadenza viene annunciato a voce |
 | Musica | `POST /api/music` (`play`, `pause`, `resume`, `stop`, `status`, `sleep`) | La coda resta del server: quando il bridge passa a `idle` parte il brano successivo, sullo stesso Echo |
@@ -900,9 +883,9 @@ pytest riporta un test per ogni area (web, GitHub, Home Assistant, sandbox, docu
 
 A ogni push GitHub Actions esegue lint (`ruff`), formattazione e tutta la suite su Python 3.11 e 3.12 ([`.github/workflows/test.yml`](.github/workflows/test.yml)); lo stato è nel badge in cima a questo README.
 
-Copre 255 controlli: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF e anti DNS rebinding, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e notifiche, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica in locale con mpv e su HA con passaggio automatico al brano successivo, Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 264 controlli: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF e anti DNS rebinding, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e sveglie sull'Echo, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica sull'Echo con passaggio automatico al brano successivo, bridge Echo (annunci, "non disturbare", avviso dei processi), Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
-Richiede Chromium per Playwright e `mpv`. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
+Richiede Chromium per Playwright. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 
 Non è coperto dai test automatici, perché richiede servizi esterni reali: le pagine reali di Google e Bing, YouTube e YouTube Music, le API reali di Google Calendar, un server SMTP vero, OpenWA e GitHub.
 
@@ -956,15 +939,14 @@ Lo stile del codice è controllato con `ruff` (`ruff check . && ruff format .`).
 | OpenWebUI: 404 o redirect | Usa l'URL con lo slash finale: `http://IP:8000/` |
 | 401 Unauthorized | La chiave Bearer in OpenWebUI deve coincidere con `MCP_API_KEY` |
 | OpenWebUI non riesce a usare gli strumenti (errori di sessione o di connessione) | Imposta `ENABLE_ELICITATION=false` per tornare alla modalità senza sessione |
-| Mancano i tool di HA o del calendario | Manca `HASS_TOKEN` o mancano le credenziali Google nelle [variabili fisse](#variabili-fisse), oppure il servizio installato non è aggiornato (deve contenere `EnvironmentFile=-/etc/mcp-server/mcp-server.env`): controlla la riga `Tool attivi` nel log e la verifica della sezione Variabili fisse |
+| Mancano i tool di HA, timer, musica o del calendario | Manca `HASS_TOKEN`, `ECHO_BRIDGE_URL` o mancano le credenziali Google nelle [variabili fisse](#variabili-fisse), oppure il servizio installato non è aggiornato (deve contenere `EnvironmentFile=-/etc/mcp-server/mcp-server.env`): controlla la riga `Tool attivi` nel log e la verifica della sezione Variabili fisse |
 | La ricerca restituisce "captcha" | È normale ogni tanto: il server passa da solo a DuckDuckGo o Bing |
 | Nel log: `Terminale SENZA sandbox` | Installa `bubblewrap`; se non basta, in Proxmox abilita Opzioni → Funzionalità → Nesting per il container (vedi [Sicurezza](#sicurezza)) |
 | Il browser non parte come utente `mcp` | Installa Chromium con `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright` |
 | `PermissionError: [Errno 13] Permission denied: '/mnt/hdd-esterno/...'` | Alcuni file della cartella dati appartengono a root, di solito perché `mcp_server.py` è stato eseguito come root. Esegui `chown -R mcp:mcp /mnt/hdd-esterno` e riavvia il servizio. All'avvio il server segnala nel log i file non scrivibili |
 | Nel log: `Executable doesn't exist at /opt/ms-playwright/...` | Playwright è stato aggiornato ma il suo browser no: esegui `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright /opt/mcp-server/venv/bin/playwright install chromium` e riavvia il servizio (passo 3 di [Aggiornamento](#aggiornamento)) |
 | Le aree non compaiono nella ricerca HA | Il token deve appartenere a un utente admin (per `/api/template`) |
-| La musica non parte | Aggiorna `yt-dlp`, installa deno; per la riproduzione locale servono `mpv` e un'uscita audio |
+| La musica non parte | Aggiorna `yt-dlp`, installa deno; controlla che `--check` elenchi gli Echo collegati |
 | L'email non parte: "Credenziali SMTP rifiutate" | Con Gmail serve una password per le app, non la password dell'account |
 | WhatsApp: errore dal gateway | Controlla nella dashboard del gateway che la sessione sia collegata al telefono, che la chiave sia giusta e che `OPENWA_SESSION_ID` sia l'ID e non il nome della sessione |
-| Un timer non notifica | Controlla `TIMER_NOTIFY_SERVICE` e il log del servizio (`journalctl -u mcp-server`) |
 | L'Echo non suona i timer o non riproduce | `python mcp_server.py --check` deve elencare gli Echo; nel log cerca `[echo]` o `registrazione sull'Echo non riuscita`. 401 = `ECHO_BRIDGE_TOKEN` diverso da `API_TOKEN` del bridge |

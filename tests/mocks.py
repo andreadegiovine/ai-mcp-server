@@ -2,10 +2,7 @@
 
 import io
 import json
-import math
-import struct
 import time
-import wave
 from datetime import UTC, datetime, timedelta
 
 from starlette.applications import Starlette
@@ -418,19 +415,6 @@ web_app = Starlette(
         Route("/api/sessions/{sid}/messages/send-image", openwa, methods=["POST"]),
     ]
 )
-
-
-def crea_wav(path, secondi=3.0):
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(8000)
-        w.writeframes(
-            b"".join(
-                struct.pack("<h", int(3000 * math.sin(2 * math.pi * 440 * i / 8000)))
-                for i in range(int(8000 * secondi))
-            )
-        )
 
 
 # --- Bridge Echo finto (ai-echo-dot-bridge): API REST + strumento MCP set_volume ---------

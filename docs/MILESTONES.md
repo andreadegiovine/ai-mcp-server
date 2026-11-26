@@ -6,6 +6,22 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-26 · Echo come unico canale per timer, sveglie e musica
+
+### Contesto
+L'agente gira su llama.cpp e si usa a voce tramite il bridge Alexa (oltre che in chat con OpenWebUI). Home Assistant non fa da intermediario: è solo uno dei sistemi che l'agente legge e comanda con i suoi strumenti.
+
+### Attività svolte
+- ✅ **Timer e sveglie solo sull'Echo**: tolte le notifiche tramite Home Assistant (notifica persistente, push, TTS, script) e il suono locale, con le variabili `TIMER_*`; senza bridge gli strumenti dei timer non vengono registrati
+- ✅ **Musica solo sull'Echo**: tolti la riproduzione locale con mpv e i `media_player` di Home Assistant, con le variabili `MUSIC_DEFAULT_DEVICE`, `MUSIC_DEFAULT_VOLUME` e `MUSIC_MPV_*`; il parametro `dispositivo` diventa `echo`; senza bridge gli strumenti della musica non vengono registrati
+- ✅ mpv non serve più (installazione, GitHub Actions, test); avviso nel log all'avvio se manca `ECHO_BRIDGE_URL`
+- ✅ README riscritto per la nuova architettura; test riorganizzati (musica sull'Echo, controllo che senza bridge timer e musica siano disattivati): **264/264 controlli superati**
+
+### Decisioni prese
+- OpenWebUI resta in uso: domande con modulo interattivo, link ai file e immagini in markdown restano invariati
+
+---
+
 ## 2026-11-25 · Integrazione con il bridge vocale Echo (ai-echo-dot-bridge)
 
 ### Obiettivo
@@ -245,8 +261,6 @@ Server MCP v1 con 6 tool: data/ora, ricerca Google con Playwright, lettura pagin
 - ⏳ Collaudo con OpenWebUI: visualizzazione delle immagini restituite dai tool e scelta dei tool da tenere attivi per il modello in uso
 - ⏳ Provare l'invio reale di email (Gmail) e WhatsApp (OpenWA)
 - ⏳ Verificare con OpenWebUI la modalità con sessione (default) e se mostra i moduli interattivi; in caso di problemi usare `ENABLE_ELICITATION=false`
-- 💡 Sandbox dei comandi del terminale con bubblewrap (visibilità limitata al solo workspace)
-- 💡 Musica tramite Music Assistant, come alternativa a yt-dlp per gli altoparlanti di HA
-- 💡 Pausa automatica della musica (o volume abbassato) quando scatta un timer
-- 💡 Esecuzione dei test in GitHub Actions
-- 💡 Integrazione con un servizio vocale: valutare se togliere emoji e simboli (✅, ⚠️, 🎵, •) anche dai testi restituiti dai tool
+- ✅ Sandbox dei comandi del terminale con bubblewrap (fatto il 2026-11-21)
+- ✅ Esecuzione dei test in GitHub Actions (fatto il 2026-11-25)
+- ✅ Integrazione con un servizio vocale: testi dei tool senza emoji (2026-11-25) e bridge Echo (2026-11-25/26)

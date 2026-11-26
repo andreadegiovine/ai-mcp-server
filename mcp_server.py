@@ -212,6 +212,8 @@ def main() -> None:
         logger.warning("HASS_TOKEN non impostato: tool Home Assistant disabilitati.")
     if echo_bridge.attivo():
         logger.info(f"Bridge Echo: {echo_bridge.ECHO_BRIDGE_URL} (timer, sveglie, musica e avvisi vocali sull'Echo)")
+    else:
+        logger.warning("ECHO_BRIDGE_URL non impostato: timer, sveglie e musica disattivati (suonano solo sull'Echo).")
     logger.info(f"Avvio server MCP su {MCP_HOST}:{MCP_PORT} — endpoint OpenWebUI: http://<IP>:{MCP_PORT}/")
     uvicorn.run(crea_app(), host=MCP_HOST, port=MCP_PORT, log_level="warning")
 

@@ -5,7 +5,7 @@ Avvia in locale un Home Assistant finto, un sito web finto (meteo, news, cambi, 
 e il server MCP, poi chiama i tool come farebbe OpenWebUI. Non serve accesso a internet.
 
 Uso:   python tests/run_tests.py
-Richiede: le dipendenze di requirements.txt, Chromium per Playwright e mpv (test musica in locale).
+Richiede: le dipendenze di requirements.txt e Chromium per Playwright.
 Variabile opzionale: CHROMIUM_PATH=/percorso/chrome se Playwright non trova il suo browser.
 """
 
@@ -28,8 +28,6 @@ os.environ.update(
         "WEB_ALLOW_PRIVATE_URLS": "false",
         "MCP_API_KEY": "chiave-test",
         "MCP_PORT": "18000",
-        "TIMER_NOTIFY_SERVICE": "notify.mobile_app_test",
-        "MUSIC_MPV_AO": "null",
         "MUSIC_START_TIMEOUT": "8",
         "HASS_CONFIRM_ENTITIES": "switch.caldaia",
         "HASS_BLOCKED_ENTITIES": "camera.*",
@@ -102,11 +100,7 @@ def url_test(url):
 
 patch_ovunque("url_consentito", url_test)
 
-# --- YouTube finto: brani = file wav locali ---
-WAV = S / "wav"
-WAV.mkdir(exist_ok=True)
-for vid in ["AAAAAAAAAAA", "BBBBBBBBBBB", "CCCCCCCCCCC", "DDDDDDDDDDD", "EEEEEEEEEEE"]:
-    mocks.crea_wav(WAV / f"{vid}.wav", 8)
+# --- YouTube finto: gli URL audio puntano a un CDN inventato (li "suona" il bridge finto) ---
 
 
 class FakeYT:
@@ -127,7 +121,6 @@ class FakeYT:
 
 
 t_musica.LETTORE.yt = FakeYT()
-t_musica.Brano.url = property(lambda self: str(WAV / f"{self.video_id}.wav"))
 
 # --- SMTP finto ---
 SMTP_LOG = []
@@ -1415,10 +1408,6 @@ async def esegui():
             await asyncio.sleep(3.5)
             t = testo(await call("timer_lista"))
             check("timer scaduto", "attivi: 2" in t and "«pasta» scaduto" in t, t)
-            notif = [c for c in mocks.CALLS if c[0] in ("persistent_notification", "notify")]
-            check(
-                "timer notifica HA (persistent + notify)", len(notif) == 2 and "pasta" in notif[0][2]["message"], notif
-            )
             t = testo(await call("timer_annulla", id_o_etichetta="arrosto"))
             check("timer annulla per etichetta", "arrosto" in t, t)
             t = testo(await call("timer_annulla", id_o_etichetta="tutti"))
@@ -1466,61 +1455,10 @@ async def esegui():
             )
             B["dnd"] = False
 
-            # --- Musica: locale (mpv, uscita null) ---
-            sezione("musica")
-            t = testo(await call("musica_riproduci", richiesta="bohemian rhapsody", dispositivo="locale"))
-            check("musica locale avvio", "Bohemian Rhapsody" in t and "locale" in t, t)
-            await asyncio.sleep(2.5)
-            t = testo(await call("musica_stato"))
-            check(
-                "musica stato playing + coda simili",
-                "in riproduzione" in t and "Simile B" in t and "Simile A" not in t,
-                t,
-            )
-            t = testo(await call("musica_controlla", azione="volume", valore=35))
-            check("volume locale", "→ 35%" in t, t)
-            t = testo(await call("musica_controlla", azione="abbassa_volume"))
-            check("abbassa volume", "→ 25%" in t, t)
-            t = testo(await call("musica_controlla", azione="pausa"))
-            check("pausa", "pausa" in t, t)
-            await asyncio.sleep(2.5)
-            t = testo(await call("musica_stato"))
-            check("stato in pausa", "in pausa" in t, t)
-            await call("musica_controlla", azione="riprendi")
-            await asyncio.sleep(10)  # brano da 8s: deve passare al successivo da solo
-            t = testo(await call("musica_stato"))
-            check("auto-avanzamento al brano simile", "Simile B" in t.split("\n")[0], t)
-            t = testo(await call("musica_aggiungi_in_coda", richiesta="altro"))
-            check("aggiungi in coda", "prossimo" in t, t)
-            t = testo(await call("musica_controlla", azione="successivo"))
-            check("salta", "Bohemian" in t, t)
-            t = testo(await call("musica_controlla", azione="stop"))
-            check("stop", "interrotta" in t, t)
-
-            # --- Musica: su media_player HA (nome fuzzy) ---
-            sezione("musica")
-            t = testo(await call("musica_riproduci", richiesta="queen", dispositivo="cucina"))
-            check("musica su HA (nome 'cucina')", "media_player.cucina" in t, t)
-            pm = [c for c in mocks.CALLS if c[1] == "play_media"]
-            check(
-                "play_media con URL stream",
-                pm and pm[-1][2]["media_content_id"] == "http://cdn.example/AAAAAAAAAAA.m4a",
-                pm[-1:],
-            )
-            await asyncio.sleep(9)  # il mock finisce il brano dopo 5s
-            pm = [c for c in mocks.CALLS if c[1] == "play_media"]
-            check("HA auto-avanzamento", pm[-1][2]["media_content_id"] == "http://cdn.example/BBBBBBBBBBB.m4a", pm[-1:])
-            t = testo(await call("musica_controlla", azione="volume", valore=20))
-            check("volume HA", "40% → 20%" in t, t)
-            t = testo(await call("musica_controlla", azione="stop"))
-            check("stop HA", "interrotta" in t, t)
-            t = testo(await call("musica_riproduci", richiesta="x", dispositivo="bagno"))
-            check("dispositivo inesistente", "Nessun altoparlante" in t, t)
-
             # --- Musica sull'Echo (bridge) ---
-            sezione("echo_bridge")
+            sezione("musica")
             B = mocks.BRIDGE
-            t = testo(await call("musica_riproduci", richiesta="queen", dispositivo="echo"))
+            t = testo(await call("musica_riproduci", richiesta="queen"))
             check("musica sull'Echo dell'ultima richiesta", "Echo Cucina" in t, t)
             play = [c[1] for c in B["calls"] if c[0] == "music" and c[1].get("action") == "play"]
             check(
@@ -1528,38 +1466,69 @@ async def esegui():
                 play
                 and play[-1]["url"] == "http://cdn.example/AAAAAAAAAAA.m4a"
                 and play[-1]["headers"] == {"User-Agent": "yt"}
-                and "Bohemian" in play[-1]["title"],
+                and play[-1]["title"] == "Bohemian Rhapsody di Queen",
                 play[-1:],
             )
-            await asyncio.sleep(9)  # il bridge finto finisce il brano dopo 5 s
+            await asyncio.sleep(2.5)
+            t = testo(await call("musica_stato"))
+            check(
+                "stato: in riproduzione, coda di brani simili senza ripetizioni",
+                "in riproduzione" in t and "Simile B" in t and "Simile A" not in t,
+                t,
+            )
+            await asyncio.sleep(7)  # il bridge finto finisce il brano dopo 5 s
             play = [c[1] for c in B["calls"] if c[0] == "music" and c[1].get("action") == "play"]
             check(
-                "Echo: brano successivo all'idle, sullo stesso Echo",
+                "brano successivo all'idle, sullo stesso Echo",
                 play[-1]["url"] == "http://cdn.example/BBBBBBBBBBB.m4a" and play[-1]["echo"] == "Echo Cucina",
                 play[-1:],
             )
             t = testo(await call("musica_controlla", azione="volume", valore=20))
             vol = [c[1] for c in B["calls"] if c[0] == "set_volume"]
             check("volume dell'Echo via MCP set_volume", "40% → 20%" in t and vol and vol[-1]["level"] == 20, (t, vol))
+            t = testo(await call("musica_controlla", azione="abbassa_volume"))
+            check("abbassa volume", "20% → 10%" in t, t)
             t = testo(await call("musica_controlla", azione="spegni_tra", valore=30))
             check("spegnimento programmato", "30 min" in t and B["sleep"] == 30, (t, B["sleep"]))
             t = testo(await call("musica_stato"))
             check("stato musica Echo", "Echo Cucina" in t and "spegnimento tra" in t, t)
+            t = testo(await call("musica_aggiungi_in_coda", richiesta="altro"))
+            check("aggiungi in coda", "prossimo" in t, t)
+            t = testo(await call("musica_controlla", azione="successivo"))
+            check("salta al brano in coda", "Bohemian" in t, t)
             await call("musica_controlla", azione="pausa")
             check("pausa sull'Echo", B["music"]["state"] == "paused", B["music"])
             await asyncio.sleep(3)
-            check("in pausa niente avanzamento", B["music"]["url"].endswith("BBBBBBBBBBB.m4a"), B["music"])
+            check("in pausa niente avanzamento", B["music"]["url"].endswith("AAAAAAAAAAA.m4a"), B["music"])
             t = testo(await call("musica_controlla", azione="stop"))
             check("stop sull'Echo", "interrotta" in t and B["music"]["state"] == "idle", t)
-            t = testo(await call("musica_riproduci", richiesta="queen", dispositivo="echo camera", simili=False))
+            t = testo(await call("musica_riproduci", richiesta="queen", echo="camera", simili=False))
             check("musica su un Echo per nome", "Echo Camera" in t, t)
             await call("musica_controlla", azione="stop")
+            t = testo(await call("musica_riproduci", richiesta="x", echo="bagno"))
+            check("Echo inesistente", "Nessun Echo" in t and "Echo Cucina" in t, t)
+
+            sezione("echo_bridge")
             t = testo(await call("terminale_esegui", comando="sleep 1", in_background=True, avvisa_al_termine=True))
             await asyncio.sleep(2.5)
             check(
                 "fine del processo annunciata sull'Echo",
                 "annuncerò" in t and any("sleep" in a["text"] and "correttamente" in a["text"] for a in B["announces"]),
                 (t, B["announces"][-1:]),
+            )
+            import subprocess
+
+            senza = subprocess.run(
+                [sys.executable, str(ROOT / "mcp_server.py"), "--check"],
+                env={**os.environ, "ECHO_BRIDGE_URL": "", "DATA_DIR": str(S / "senza-bridge")},
+                capture_output=True,
+                text=True,
+                timeout=120,
+            ).stdout
+            check(
+                "senza bridge: timer e musica disattivati",
+                '"timer": false' in senza and '"music": false' in senza and "timer_imposta" not in senza,
+                senza[:300],
             )
 
     # --- Domande con modulo interattivo (elicitation MCP, attiva di default sul server principale) ---
@@ -1794,13 +1763,6 @@ async def esegui():
         await task
     ok = sum(r[2] for r in RIS)
     print(f"\n=== {ok}/{len(RIS)} test superati ===")
-    # verifica pulizia: mpv chiuso
-    import subprocess
-
-    print(
-        "mpv ancora attivo:",
-        subprocess.run(["pgrep", "-f", "mpv --idle"], capture_output=True).stdout.decode().strip() or "no",
-    )
     shutil.rmtree(S, ignore_errors=True)
     return RIS
 
