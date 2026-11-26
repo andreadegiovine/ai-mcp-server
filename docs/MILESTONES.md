@@ -6,6 +6,22 @@ Legenda: ✅ completato · 🔄 in corso · ⏳ da fare · 💡 idea da valutare
 
 ---
 
+## 2026-11-26 · Configurazione del server invisibile all'agente
+
+### Problema
+L'agente, dal terminale, riusciva a leggere variabili delle variabili fisse (`/etc/mcp-server/mcp-server.env`), per esempio quelle di GitHub. L'ambiente passato ai comandi toglieva solo le variabili con nomi "da segreto" (TOKEN, PASSWORD...), quindi `GITHUB_REPO_AUTORIZZATI`, `SMTP_USER`, `OPENWA_URL` e le altre arrivavano comunque. Inoltre, senza sandbox, un comando con lo stesso utente del server poteva leggere `/proc/<pid>/environ` del server, token compresi.
+
+### Attività svolte
+- ✅ **Ambiente dei comandi a elenco chiuso**: ai comandi dell'agente (terminale, Python, processi in background, conversioni, git) arrivano solo lingua, fuso, certificati e proxy; nessuna variabile di configurazione del server
+- ✅ **Processo del server non ispezionabile** (`PR_SET_DUMPABLE=0`): `/proc/<pid>/environ` e la memoria del server non sono leggibili dai processi dello stesso utente, anche senza sandbox (verificato con due processi dello stesso utente: `Permission denied`)
+- ✅ Test: nessuna variabile di configurazione nell'output di `env` del terminale, protezione attiva (**266/266 controlli superati**)
+
+### Prossimi passi
+- ⏳ Sul container: verificare che la sandbox sia attiva (`Terminale in sandbox` nel log) e valutare `TERMINAL_SANDBOX=obbligatoria`
+- ⏳ Se l'agente ha visto il valore di `GITHUB_TOKEN`, revocarlo e crearne uno nuovo
+
+---
+
 ## 2026-11-26 · Echo come unico canale per timer, sveglie e musica
 
 ### Contesto

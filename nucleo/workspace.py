@@ -57,8 +57,36 @@ def variabili_home(home: str) -> dict[str, str]:
     }
 
 
+# Variabili d'ambiente del server che i comandi dell'agente possono vedere: solo lingua, fuso, certificati e
+# proxy. Tutto il resto (configurazione del .env e delle variabili fisse, anche non segreta) resta nascosto.
+_VARIABILI_AMMESSE = {
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "LD_LIBRARY_PATH",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
+    "NODE_EXTRA_CA_CERTS",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+}
+
+
+def _variabile_ammessa(nome: str) -> bool:
+    if _CHIAVI_SENSIBILI.search(nome):
+        return False
+    return nome.upper() in _VARIABILI_AMMESSE or nome.startswith("LC_")
+
+
 def env_sicuro(base: Path | None = None) -> dict[str, str]:
-    env = {k: v for k, v in os.environ.items() if not _CHIAVI_SENSIBILI.search(k)}
+    env = {k: v for k, v in os.environ.items() if _variabile_ammessa(k)}
     env.update(
         {
             "PYTHONUNBUFFERED": "1",

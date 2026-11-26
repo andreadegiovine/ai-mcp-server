@@ -711,6 +711,26 @@ async def esegui():
                 "ciao" in t and "workspace" in t and "\n1" in t and "codice uscita: 0" in t,
                 t,
             )
+            t = testo(await call("terminale_esegui", comando="env"))
+            visibili = [
+                v
+                for v in (
+                    "GITHUB_REPO_AUTORIZZATI",
+                    "OPENWA_URL",
+                    "SMTP_USER",
+                    "ECHO_BRIDGE_URL",
+                    "DATA_DIR",
+                    "HASS_URL",
+                )
+                if v in t
+            ]
+            check("terminale: nessuna variabile di configurazione del server nell'ambiente", not visibili, visibili)
+            import ctypes
+
+            check(
+                "processo del server non ispezionabile (/proc/<pid>/environ protetto)",
+                ctypes.CDLL(None).prctl(3, 0, 0, 0, 0) == 0,
+            )
             t = testo(await call("terminale_esegui", comando="sleep 5", timeout_secondi=1))
             check("terminale timeout", "TIMEOUT" in t, t)
             t = testo(await call("terminale_esegui", comando="ls", cartella="../.."))

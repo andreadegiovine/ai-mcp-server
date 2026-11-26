@@ -778,7 +778,8 @@ I tool accettano date come `oggi`, `domani 15:00`, `18/11/2026 15:30` o in forma
 `terminale_esegui`, `esegui_python` e i processi in background eseguono comandi veri. Per impedire che l'agente esca dal workspace, ogni comando gira in una sandbox [bubblewrap](https://github.com/containers/bubblewrap), dove esistono solo:
 - la **cartella di lavoro**, in lettura e scrittura: il workspace oppure, con `id_conversazione`, solo la cartella della conversazione;
 - **in sola lettura**: i programmi di sistema (`/usr`), `/etc` (senza `/etc/mcp-server`) e l'interprete Python del server con le sue librerie;
-- una `/tmp` e una home temporanee, cancellate a fine comando.
+- una `/tmp` temporanea, cancellata a fine comando, e la home persistente dell'agente (`/home/agente`);
+- un **ambiente ridotto al minimo**: lingua, fuso orario, certificati e proxy. Nessuna variabile del `.env` o delle variabili fisse arriva ai comandi, nemmeno quelle non segrete (repository autorizzati, indirizzi di Home Assistant, OpenWA o del bridge, utente SMTP...).
 
 Il resto del server non esiste per i comandi: `/mnt`, `/opt` (codice, `.env`, venv esclusi i file Python), `data/` fuori dal workspace, le altre cartelle delle conversazioni. La rete resta disponibile per `git clone`, `pip` e `curl`.
 
@@ -792,7 +793,9 @@ All'avvio il log dice se è attiva: `Terminale in sandbox (bubblewrap)`. Se inve
 - installa bubblewrap: `apt install -y bubblewrap`;
 - se è installato ma non parte, in Proxmox abilita per il container **Opzioni → Funzionalità → Nesting** e riavvia il container.
 
-Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il terminale funziona lo stesso, senza confinamento. Per avere la certezza del confinamento, metti `TERMINAL_SANDBOX=obbligatoria` nelle [variabili fisse](#variabili-fisse): senza sandbox, terminale ed `esegui_python` si rifiutano di eseguire comandi.
+Anche senza sandbox, il processo del server è marcato come **non ispezionabile** (`PR_SET_DUMPABLE=0`): i comandi dell'agente, che girano con lo stesso utente `mcp`, non possono leggere `/proc/<pid del server>/environ`, dove si trovano i token, né la sua memoria. All'avvio il log segnala se la protezione non è riuscita.
+
+Con `TERMINAL_SANDBOX=auto` (predefinito), se la sandbox non è disponibile il terminale funziona lo stesso, senza confinamento: l'agente vede però tutto ciò che l'utente `mcp` può leggere, compresi codice e `.env` in `/opt/mcp-server`. Per avere la certezza del confinamento, metti `TERMINAL_SANDBOX=obbligatoria` nelle [variabili fisse](#variabili-fisse): senza sandbox, terminale ed `esegui_python` si rifiutano di eseguire comandi.
 
 ### Altre protezioni
 1. **Container LXC unprivileged.** Si controlla sull'host Proxmox con `pct config <ID> | grep unprivileged`.
@@ -883,7 +886,7 @@ pytest riporta un test per ogni area (web, GitHub, Home Assistant, sandbox, docu
 
 A ogni push GitHub Actions esegue lint (`ruff`), formattazione e tutta la suite su Python 3.11 e 3.12 ([`.github/workflows/test.yml`](.github/workflows/test.yml)); lo stato è nel badge in cima a questo README.
 
-Copre 264 controlli: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF e anti DNS rebinding, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e sveglie sull'Echo, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica sull'Echo con passaggio automatico al brano successivo, bridge Echo (annunci, "non disturbare", avviso dei processi), Google Calendar (con un servizio simulato) e il parsing di date e durate.
+Copre 266 controlli: autenticazione, calcolatrice e protezioni, meteo, notizie, valute, memoria, lettura di pagine e PDF, blocchi anti-SSRF e anti DNS rebinding, immagini e screenshot, ripiego della ricerca, terminale (timeout, background, sandbox bubblewrap, segreti), ambienti di sviluppo (Node.js, Python con uv, Go, home persistente), tool sui file, Home Assistant (ricerca, stato, storico, regole di sicurezza, conferme, audit), timer e sveglie sull'Echo, domande all'utente (in chat e con modulo interattivo), cartelle per conversazione (creazione, confinamento, terminale, allegati), link firmati ai file (indirizzo ricavato dalla richiesta), GitHub (clone, commit, push con conferma, blocchi di sicurezza, pull request), lettura di documenti (Word, Excel, PowerPoint, OpenDocument, vecchi formati Office con LibreOffice, PDF anche protetti o scansionati con OCR, RTF, EPUB, email, archivi), rubrica, email e WhatsApp (richiesta del recapito, conferma obbligatoria, codici monouso, allegati, gateway OpenWA), musica sull'Echo con passaggio automatico al brano successivo, bridge Echo (annunci, "non disturbare", avviso dei processi), Google Calendar (con un servizio simulato) e il parsing di date e durate.
 
 Richiede Chromium per Playwright. Se sono installati LibreOffice e tesseract, vengono provati anche i vecchi formati Office, gli OpenDocument e l'OCR; altrimenti quei test vengono saltati. Se Playwright non trova il browser, imposta `CHROMIUM_PATH`.
 

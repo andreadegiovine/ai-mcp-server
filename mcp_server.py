@@ -110,6 +110,8 @@ _attivita: list[asyncio.Task] = []
 
 async def avvio() -> None:
     logger.info(f"Server MCP versione {VERSIONE}")
+    if not sandbox.proteggi_processo():
+        logger.warning("Impossibile proteggere il processo: i comandi dell'agente potrebbero leggerne l'ambiente.")
     prepara_cartelle()
     problemi = controlla_permessi()
     if problemi:

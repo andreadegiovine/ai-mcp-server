@@ -46,6 +46,25 @@ def sandbox_disponibile() -> tuple[bool, str]:
     return True, ""
 
 
+def proteggi_processo() -> bool:
+    """Rende il processo del server non ispezionabile (PR_SET_DUMPABLE=0).
+
+    Così i comandi dell'agente, che girano con lo stesso utente, non possono leggere /proc/<pid>/environ
+    (dove ci sono i token) né la memoria del server, anche quando la sandbox non è disponibile."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL(None, use_errno=True)
+        pr_set_dumpable, pr_get_dumpable = 4, 3
+        if libc.prctl(pr_set_dumpable, 0, 0, 0, 0) != 0:
+            return False
+        return libc.prctl(pr_get_dumpable, 0, 0, 0, 0) == 0
+    except Exception:
+        return False
+
+
 def argomenti_sandbox(base: Path, cwd: Path) -> list[str]:
     """
     Comando bwrap: il processo vede solo la cartella di lavoro (lettura/scrittura) e, in sola lettura,
